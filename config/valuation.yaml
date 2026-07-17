@@ -14,3 +14,33 @@ macro:
   federal_reserve:
     collect_policy_rate: false
     apply_policy_rate_adjustment: false
+
+valuation:
+  target_pe:
+    minimum_target_pe: 15.0
+    maximum_target_pe: 50.0
+
+    default_target_peg: 1.0
+
+    low_peg_threshold: 1.0
+    normal_peg_upper_threshold: 1.5
+    high_peg_threshold: 2.0
+
+    low_peg_adjustment: 5.0
+    normal_peg_adjustment: 0.0
+    elevated_peg_adjustment: -2.0
+    high_peg_adjustment: -5.0
+
+    preferred_sector_adjustment: 5.0
+    ordinary_sector_adjustment: 0.0
+
+    high_forward_pe_premium_threshold: 1.5
+    high_forward_pe_adjustment: -2.0
+
+    preferred_sectors:
+      - Technology
+      - Semiconductors
+      - Semiconductor Equipment
+      - Communication Equipment
+      - Computer Hardware
+      - Electronic Components
