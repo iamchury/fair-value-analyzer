@@ -1,0 +1,16 @@
+macro:
+  treasury_yield:
+    symbol: "^TNX"
+    value_scale: "percent"
+    threshold_yield_percent: 4.3
+    maximum_discount_percent: 25.0
+    short_window_observations: 20
+    long_window_observations: 60
+    trend_tolerance_percentage_points: 0.05
+    rising_adjustment_percent: -10.0
+    neutral_adjustment_percent: 0.0
+    falling_adjustment_percent: 10.0
+
+  federal_reserve:
+    collect_policy_rate: false
+    apply_policy_rate_adjustment: false
