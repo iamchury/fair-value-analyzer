@@ -44,3 +44,6 @@ valuation:
       - Communication Equipment
       - Computer Hardware
       - Electronic Components
+  decision:
+    buy_discount_percent: 20.0
+    sell_premium_percent: 20.0
