@@ -1,104 +1,92 @@
 import argparse
 import sys
-from dataclasses import dataclass
+from collections.abc import Sequence
+from typing import Callable
 
-import yfinance as yf
-
-
-@dataclass
-class PriceData:
-    """종목의 최근 거래 데이터."""
-
-    symbol: str
-    date: str
-    close: float
-    volume: int
-    currency: str
+analyze_stock_from_config_file: Callable[..., object] | None = None
+format_stock_analysis_report: Callable[[object], str] | None = None
+_EXPECTED_ERRORS: tuple[type[BaseException], ...] | None = None
 
 
-def get_latest_price(symbol: str) -> PriceData:
-    """
-    Yahoo Finance에서 종목의 최근 거래일 데이터를 조회한다.
-
-    Args:
-        symbol: Yahoo Finance 티커. 예: MU, NVDA, AMAT
-
-    Returns:
-        최근 거래일의 날짜, 종가, 거래량, 통화
-
-    Raises:
-        RuntimeError: 데이터를 가져오지 못한 경우
-    """
-    normalized_symbol = symbol.strip().upper()
-
-    if not normalized_symbol:
-        raise ValueError("종목 티커를 입력해야 합니다.")
-
-    ticker = yf.Ticker(normalized_symbol)
-
-    history = ticker.history(
-        period="5d",
-        auto_adjust=False,
-        repair=True,
-    )
-
-    if history.empty:
-        raise RuntimeError(
-            f"{normalized_symbol}: 주가 데이터를 가져오지 못했습니다."
-        )
-
-    latest_row = history.iloc[-1]
-    latest_date = history.index[-1].strftime("%Y-%m-%d")
-
-    try:
-        currency = ticker.fast_info.get("currency", "USD")
-    except Exception:
-        currency = "USD"
-
-    return PriceData(
-        symbol=normalized_symbol,
-        date=latest_date,
-        close=float(latest_row["Close"]),
-        volume=int(latest_row["Volume"]),
-        currency=str(currency),
-    )
-
-
-def parse_arguments() -> argparse.Namespace:
-    """명령행 인수를 읽는다."""
+def build_parser() -> argparse.ArgumentParser:
+    """Build the command-line parser for single-stock analysis."""
     parser = argparse.ArgumentParser(
-        description="Yahoo Finance에서 최근 종가를 조회합니다."
+        description=(
+            "Analyze a stock using EPS growth, Target PE, Treasury adjustment, "
+            "and fair-value thresholds."
+        )
     )
-
+    parser.add_argument("symbol", help="Yahoo Finance stock symbol to analyze.")
     parser.add_argument(
-        "symbol",
-        nargs="?",
-        default="MU",
-        help="조회할 종목 티커. 기본값: MU",
+        "--config",
+        default="config/valuation.yaml",
+        help="Path to valuation configuration YAML. Default: config/valuation.yaml",
     )
+    return parser
 
-    return parser.parse_args()
 
-
-def main() -> int:
-    args = parse_arguments()
+def main(argv: Sequence[str] | None = None) -> int:
+    """Run one stock valuation analysis from the command line."""
+    parser = build_parser()
+    args = parser.parse_args(argv)
 
     try:
-        price_data = get_latest_price(args.symbol)
-    except Exception as error:
-        print(f"[ERROR] {error}", file=sys.stderr)
+        analyzer, formatter, expected_errors = _load_runtime_dependencies()
+    except ModuleNotFoundError as exc:
+        print(f"Error: {exc}", file=sys.stderr)
         return 1
 
-    print("=" * 40)
-    print("Yahoo Finance 최근 거래 데이터")
-    print("=" * 40)
-    print(f"종목       : {price_data.symbol}")
-    print(f"기준 날짜  : {price_data.date}")
-    print(f"최근 종가  : {price_data.close:,.2f} {price_data.currency}")
-    print(f"거래량     : {price_data.volume:,}")
-    print("=" * 40)
+    try:
+        result = analyzer(
+            symbol=args.symbol,
+            config_path=args.config,
+        )
+        report = formatter(result)
+    except expected_errors as exc:
+        print(f"Error: {exc}", file=sys.stderr)
+        return 1
 
+    print(report)
     return 0
+
+
+def _load_runtime_dependencies() -> tuple[
+    Callable[..., object],
+    Callable[[object], str],
+    tuple[type[BaseException], ...],
+]:
+    global analyze_stock_from_config_file
+    global format_stock_analysis_report
+    global _EXPECTED_ERRORS
+
+    if analyze_stock_from_config_file is None:
+        from src.services.stock_analysis import (
+            analyze_stock_from_config_file as service_analyze_stock,
+        )
+
+        analyze_stock_from_config_file = service_analyze_stock
+    if format_stock_analysis_report is None:
+        from src.reports.text_report import (
+            format_stock_analysis_report as report_formatter,
+        )
+
+        format_stock_analysis_report = report_formatter
+    if _EXPECTED_ERRORS is None:
+        from src.config.valuation import ValuationConfigurationError
+        from src.services.stock_analysis import StockAnalysisServiceError
+
+        _EXPECTED_ERRORS = (
+            StockAnalysisServiceError,
+            ValuationConfigurationError,
+            ValueError,
+            RuntimeError,
+        )
+
+    return (
+        analyze_stock_from_config_file,
+        format_stock_analysis_report,
+        _EXPECTED_ERRORS,
+    )
 
 
 if __name__ == "__main__":
