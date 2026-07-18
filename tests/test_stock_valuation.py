@@ -26,6 +26,12 @@ from src.analysis.valuation_decision import (
     ValuationDecisionResult,
     ValuationRecommendation,
 )
+from src.config.industry_policies import (
+    IndustryPolicyConfiguration,
+    IndustryValuationPolicy,
+    TargetPEMode,
+    ValuationStyle,
+)
 
 
 @pytest.fixture
@@ -34,6 +40,7 @@ def target_pe_config() -> TargetPEConfig:
         minimum_target_pe=15.0,
         maximum_target_pe=50.0,
         default_target_peg=1.0,
+        maximum_eps_growth_percent=40.0,
         low_peg_threshold=1.0,
         normal_peg_upper_threshold=1.5,
         high_peg_threshold=2.0,
@@ -521,3 +528,52 @@ def test_result_retains_existing_eps_growth_result_type(
     result = calculate_stock_valuation(complete_inputs(), config)
 
     assert result.eps_growth == calculate_eps_growth(EPSGrowthInputs(5.0, 6.0))
+
+
+def test_industry_policy_changes_target_pe_used_but_preserves_original(
+    config: StockValuationConfig,
+) -> None:
+    policy = IndustryValuationPolicy(
+        name="CYCLICAL",
+        valuation_style=ValuationStyle.CYCLICAL,
+        target_pe_mode=TargetPEMode.FIXED,
+        fixed_target_pe=10.0,
+        minimum_target_pe=7.0,
+        maximum_target_pe=12.0,
+        use_eps_growth=False,
+        use_peg_adjustment=False,
+        use_sector_adjustment=False,
+        use_forward_pe_penalty=False,
+        rationale="cyclical",
+    )
+    policy_config = IndustryPolicyConfiguration(
+        policies={"CYCLICAL": policy},
+        symbol_policy_names={"MU": "CYCLICAL"},
+    )
+    policy_enabled_config = StockValuationConfig(
+        target_pe=config.target_pe,
+        treasury_yield=config.treasury_yield,
+        decision=config.decision,
+        industry_policy=policy_config,
+    )
+
+    result = calculate_stock_valuation(
+        complete_inputs(
+            symbol="MU",
+            trailing_eps=44.06,
+            forward_eps=150.77,
+            valuation_eps=73.37,
+            valuation_eps_method="CURRENT_YEAR",
+            valuation_eps_period="0y",
+            peg_ratio=0.13,
+            current_forward_pe=5.63,
+        ),
+        policy_enabled_config,
+    )
+
+    assert result.target_pe.recommended_target_pe == 50.0
+    assert result.target_pe_used == 10.0
+    assert result.industry_policy.original_target_pe == 50.0
+    assert result.industry_policy.policy_target_pe == 10.0
+    assert result.fair_value.recommended_target_pe == 10.0
+    assert result.fair_value.adjusted_fair_value == pytest.approx(73.37 * 10.0 * 0.819)

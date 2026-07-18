@@ -49,6 +49,7 @@ def valid_document() -> dict:
                 "minimum_target_pe": 15.0,
                 "maximum_target_pe": 50.0,
                 "default_target_peg": 1.0,
+                "maximum_eps_growth_percent": 40.0,
                 "low_peg_threshold": 1.0,
                 "normal_peg_upper_threshold": 1.5,
                 "high_peg_threshold": 2.0,
@@ -102,6 +103,7 @@ def test_parse_complete_valid_mapping() -> None:
     assert result.treasury_yield.maximum_discount_percent == 25.0
     assert result.target_pe.minimum_target_pe == 15.0
     assert result.target_pe.maximum_target_pe == 50.0
+    assert result.target_pe.maximum_eps_growth_percent == 40.0
     assert result.decision.buy_discount_percent == 20.0
     assert result.decision.sell_premium_percent == 20.0
 
@@ -125,6 +127,23 @@ def test_federal_reserve_section_is_optional_and_ignored() -> None:
     assert result.treasury_history.symbol == "^TNX"
 
 
+@pytest.mark.parametrize("cap", [20, 40.0, 100])
+def test_maximum_eps_growth_percent_valid_values(cap: float) -> None:
+    document = valid_document()
+    document["valuation"]["target_pe"]["maximum_eps_growth_percent"] = cap
+
+    result = parse_valuation_configuration(document)
+
+    assert result.target_pe.maximum_eps_growth_percent == cap
+
+
+def test_maximum_eps_growth_percent_is_required() -> None:
+    document = valid_document()
+    del document["valuation"]["target_pe"]["maximum_eps_growth_percent"]
+
+    assert_config_error(document, r"maximum_eps_growth_percent")
+
+
 def test_valuation_configuration_is_immutable() -> None:
     result = parse_valuation_configuration(valid_document())
 
@@ -141,6 +160,7 @@ def test_actual_repository_valuation_yaml_loads_successfully() -> None:
     assert result.treasury_history.symbol == "^TNX"
     assert result.treasury_yield.threshold_yield_percent == 4.3
     assert result.target_pe.minimum_target_pe == 15.0
+    assert result.target_pe.maximum_eps_growth_percent == 40.0
     assert result.decision.buy_discount_percent == 20.0
 
 
@@ -322,6 +342,36 @@ def test_unexpected_keys_raise(
             r"minimum_target_pe",
         ),
         (
+            ("valuation", "target_pe"),
+            "maximum_eps_growth_percent",
+            True,
+            r"maximum_eps_growth_percent",
+        ),
+        (
+            ("valuation", "target_pe"),
+            "maximum_eps_growth_percent",
+            "40",
+            r"maximum_eps_growth_percent",
+        ),
+        (
+            ("valuation", "target_pe"),
+            "maximum_eps_growth_percent",
+            None,
+            r"maximum_eps_growth_percent",
+        ),
+        (
+            ("valuation", "target_pe"),
+            "maximum_eps_growth_percent",
+            float("nan"),
+            r"maximum_eps_growth_percent",
+        ),
+        (
+            ("valuation", "target_pe"),
+            "maximum_eps_growth_percent",
+            float("inf"),
+            r"maximum_eps_growth_percent",
+        ),
+        (
             ("valuation", "decision"),
             "sell_premium_percent",
             None,
@@ -381,6 +431,24 @@ def test_preferred_sector_type_validation(
         (
             lambda document: document["valuation"]["target_pe"].update(
                 {"low_peg_threshold": 2.0, "normal_peg_upper_threshold": 1.5}
+            ),
+            r"valuation\.target_pe",
+        ),
+        (
+            lambda document: document["valuation"]["target_pe"].update(
+                {"maximum_eps_growth_percent": 0.0}
+            ),
+            r"valuation\.target_pe",
+        ),
+        (
+            lambda document: document["valuation"]["target_pe"].update(
+                {"maximum_eps_growth_percent": -1.0}
+            ),
+            r"valuation\.target_pe",
+        ),
+        (
+            lambda document: document["valuation"]["target_pe"].update(
+                {"maximum_eps_growth_percent": 501.0}
             ),
             r"valuation\.target_pe",
         ),

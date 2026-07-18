@@ -1,0 +1,17 @@
+defaults:
+  method: legacy_forward
+  current_year_weight: 0.5
+  next_year_weight: 0.5
+
+symbols:
+  MU:
+    method: current_year
+    rationale: "Use current fiscal-year EPS for cyclical memory valuation."
+
+  LITE:
+    method: next_year
+    rationale: "Use next fiscal-year EPS for structural optical growth."
+
+  GLW:
+    method: current_year
+    rationale: "Use current fiscal-year EPS for quality-growth valuation."

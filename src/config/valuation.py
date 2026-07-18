@@ -180,6 +180,9 @@ def _build_target_pe_config(section: Mapping[str, object]) -> TargetPEConfig:
         default_target_peg=_require_real_number(
             section, "default_target_peg", "valuation.target_pe"
         ),
+        maximum_eps_growth_percent=_require_real_number(
+            section, "maximum_eps_growth_percent", "valuation.target_pe"
+        ),
         low_peg_threshold=_require_real_number(
             section, "low_peg_threshold", "valuation.target_pe"
         ),
@@ -390,6 +393,7 @@ _TARGET_PE_KEYS = {
     "minimum_target_pe",
     "maximum_target_pe",
     "default_target_peg",
+    "maximum_eps_growth_percent",
     "low_peg_threshold",
     "normal_peg_upper_threshold",
     "high_peg_threshold",

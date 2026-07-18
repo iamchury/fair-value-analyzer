@@ -1,30 +1,157 @@
 # Fair Value Analyzer
 
-Yahoo Finance 데이터를 이용하여 종목의 EPS, 성장률, PER 및 적정주가를 분석하는 시스템입니다.
+Fair Value Analyzer estimates stock fair value from Yahoo Finance fundamentals,
+EPS growth, Target PE, Treasury-yield macro adjustments, and buy/sell thresholds.
 
-## 주요 기능
+## Features
 
-- Yahoo Finance 주가 데이터 수집
-- 분기별 및 연간 EPS 수집
-- EPS 성장률 계산
-- 목표 PER 기반 적정주가 계산
-- 현재가 대비 할인율 및 상승여력 계산
-- 종목별 목표가격 테이블 생성
-- GitHub Actions 기반 자동 업데이트
+- Download current stock fundamentals from Yahoo Finance.
+- Calculate EPS growth from trailing EPS and forward EPS.
+- Recommend Target PE with configurable growth, PEG, sector, and current-PE rules.
+- Apply the US 10-year Treasury yield macro adjustment.
+- Calculate base fair value, adjusted fair value, buy price, sell price, discount,
+  upside, and recommendation.
+- Run a single symbol or a configured batch of symbols.
+- Optionally compare the automatic fair value with symbol-specific research
+  valuation profiles.
 
-## 초기 분석 대상
+## Default Symbols
 
-- SOXL
-- SOXX
-- MU
-- AMAT
-- NVDA
-- GLW
-- COHR
-- LITE
+The default batch configuration lives in `config/stocks.yaml`.
 
-## 적정주가 기본 공식
+## Basic Formula
 
 ```text
-적정주가 = 예상 연간 EPS × 목표 PER
- 
+base_fair_value = forward_eps * recommended_target_pe
+adjusted_fair_value = base_fair_value * macro_adjustment_multiplier
+```
+
+## Usage
+
+Run one stock:
+
+```bash
+python -m src.main LITE
+```
+
+Inspect Yahoo EPS source fields for one stock:
+
+```bash
+python -m src.main MU --inspect-eps
+```
+
+Run the configured batch:
+
+```bash
+python -m src.main --stocks config/stocks.yaml
+```
+
+Use a custom valuation configuration:
+
+```bash
+python -m src.main LITE --config config/valuation.yaml
+```
+
+Use explicit EPS selection for fair value:
+
+```bash
+python -m src.main MU --eps-selection config/eps_selection.yaml
+```
+
+Use explicit EPS selection and industry valuation policy:
+
+```bash
+python -m src.main MU --eps-selection config/eps_selection.yaml --industry-policies config/industry_policies.yaml
+```
+
+Use research profiles and EPS selection together:
+
+```bash
+python -m src.main MU --profiles config/valuation_profiles.yaml --eps-selection config/eps_selection.yaml
+```
+
+## Valuation Profiles
+
+Optional symbol-specific research profiles can be loaded with
+`config/valuation_profiles.yaml`.
+
+Run a single symbol with profiles:
+
+```bash
+python -m src.main LITE --profiles config/valuation_profiles.yaml
+```
+
+Run the configured batch with profiles:
+
+```bash
+python -m src.main --stocks config/stocks.yaml --profiles config/valuation_profiles.yaml
+```
+
+The profile file contains configured research assumptions such as valuation
+style, valuation EPS, EPS fiscal year, research Target PE, PEG metadata, optional
+DCF fair-value reference, and source note.
+
+Research fair value uses the existing Treasury macro multiplier:
+
+```text
+research_base_fair_value = valuation_eps * target_pe
+research_adjusted_fair_value = research_base_fair_value * macro_adjustment_multiplier
+```
+
+`use_peg_adjustment` is currently metadata only. It is displayed in reports but
+does not alter the research Target PE calculation.
+
+## EPS Source Inspector
+
+The EPS source inspector is a diagnostic command. It shows raw Yahoo EPS fields
+and available annual or quarterly estimate rows when yfinance exposes them.
+
+Period inference is conservative. `UNKNOWN` means the application cannot
+reliably identify the fiscal period for Yahoo `forwardEps`. The inspector does
+not alter the automatic valuation calculation, and it is not a valuation
+recommendation. Yahoo may not expose enough metadata to distinguish GAAP,
+non-GAAP, or adjusted EPS.
+
+## EPS Selection
+
+Inspection of recent MU and LITE data showed Yahoo `forwardEps` behaving like a
+next-fiscal-year estimate for those tickers. That must not be assumed
+universally.
+
+EPS selection explicitly chooses the EPS used for fair value. The default
+behavior remains legacy Yahoo `forwardEps`, so existing commands produce the
+same automatic valuation unless `--eps-selection` is supplied.
+
+Supported methods:
+
+- `LEGACY_FORWARD`
+- `CURRENT_YEAR`
+- `NEXT_YEAR`
+- `WEIGHTED_CURRENT_NEXT`
+- `MANUAL`
+
+In this phase, EPS growth and Target PE still use legacy Yahoo `forwardEps`.
+The selected EPS affects fair value only. When selected EPS materially differs
+from Yahoo `forwardEps`, the report shows a warning. EPS selection is a
+valuation assumption, not a guarantee of accuracy.
+
+## Industry Valuation Policies
+
+Industry valuation policies explicitly choose how the automatic Target PE is
+used for fair value. Omitting `--industry-policies` preserves legacy behavior.
+
+Initial styles are:
+
+- `CYCLICAL`
+- `GROWTH`
+- `QUALITY_GROWTH`
+
+CYCLICAL policies may use a fixed conservative Target PE. GROWTH and
+QUALITY_GROWTH policies may retain calculated Target PE components while
+clipping the result to narrower policy-specific ranges. Yahoo sector labels
+alone do not determine the policy; symbol mappings are explicit assumptions in
+`config/industry_policies.yaml`.
+
+In this phase, the original Target PE engine is still calculated and reported.
+When a policy applies, fair value uses the policy Target PE, while the report
+shows both the original Target PE and the policy Target PE.

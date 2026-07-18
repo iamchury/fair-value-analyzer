@@ -1,0 +1,46 @@
+policies:
+  cyclical:
+    valuation_style: cyclical
+    target_pe_mode: fixed
+    fixed_target_pe: 10.0
+    minimum_target_pe: 7.0
+    maximum_target_pe: 12.0
+    use_eps_growth: false
+    use_peg_adjustment: false
+    use_sector_adjustment: false
+    use_forward_pe_penalty: false
+    rationale: "Use conservative normalized multiples for cyclical earnings."
+
+  growth:
+    valuation_style: growth
+    target_pe_mode: calculated
+    fixed_target_pe: null
+    minimum_target_pe: 25.0
+    maximum_target_pe: 45.0
+    use_eps_growth: true
+    use_peg_adjustment: true
+    use_sector_adjustment: true
+    use_forward_pe_penalty: true
+    rationale: "Use capped growth and PEG-aware multiples for structural growth."
+
+  quality_growth:
+    valuation_style: quality_growth
+    target_pe_mode: calculated
+    fixed_target_pe: null
+    minimum_target_pe: 20.0
+    maximum_target_pe: 40.0
+    use_eps_growth: true
+    use_peg_adjustment: true
+    use_sector_adjustment: false
+    use_forward_pe_penalty: true
+    rationale: "Use moderate premium multiples for diversified quality growth."
+
+symbols:
+  MU:
+    policy: cyclical
+
+  LITE:
+    policy: growth
+
+  GLW:
+    policy: quality_growth

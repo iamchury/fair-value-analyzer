@@ -21,6 +21,7 @@ valuation:
     maximum_target_pe: 50.0
 
     default_target_peg: 1.0
+    maximum_eps_growth_percent: 40.0
 
     low_peg_threshold: 1.0
     normal_peg_upper_threshold: 1.5

@@ -4,6 +4,17 @@ from pathlib import Path
 import pytest
 
 import src.services.stock_analysis as stock_analysis
+from src.config.eps_selection import (
+    EPSSelectionConfiguration,
+    EPSSelectionMethod,
+    EPSSelectionRule,
+)
+from src.config.industry_policies import (
+    IndustryPolicyConfiguration,
+    IndustryValuationPolicy,
+    TargetPEMode,
+    ValuationStyle as IndustryValuationStyle,
+)
 from src.analysis.macro_adjustment import TreasuryYieldConfig
 from src.analysis.stock_valuation import (
     StockValuationResult,
@@ -15,16 +26,26 @@ from src.analysis.valuation_decision import (
     ValuationRecommendation,
 )
 from src.config.valuation import ValuationConfiguration, ValuationConfigurationError
+from src.config.valuation_profiles import ValuationProfile, ValuationStyle
 from src.services.stock_analysis import (
     StockAnalysisServiceError,
     StockAnalysisServiceResult,
+    StockAnalysisWithProfileResult,
     analyze_stock,
     analyze_stock_from_config_file,
+    analyze_stock_with_profile,
+    analyze_stock_with_profile_from_config_files,
     build_stock_valuation_config,
     build_stock_valuation_inputs,
     normalize_service_symbol,
 )
 from src.yahoo.company import CompanyFundamentals
+from src.yahoo.company import (
+    CompanyFundamentalsWithEPSRawSnapshot,
+    EPSRawFieldSource,
+    YahooEPSEstimate,
+    YahooEPSRawSnapshot,
+)
 from src.yahoo.treasury import TreasuryHistoryConfig, TreasuryYieldSnapshot
 
 
@@ -56,6 +77,7 @@ def target_pe_config() -> TargetPEConfig:
         minimum_target_pe=15.0,
         maximum_target_pe=50.0,
         default_target_peg=1.0,
+        maximum_eps_growth_percent=40.0,
         low_peg_threshold=1.0,
         normal_peg_upper_threshold=1.5,
         high_peg_threshold=2.0,
@@ -412,6 +434,382 @@ def test_analyze_stock_from_config_file_propagates_loader_error(
 
     with pytest.raises(ValuationConfigurationError, match="config unavailable"):
         analyze_stock_from_config_file("LITE")
+
+
+def test_analyze_stock_with_profile_downloads_once_and_adds_research_valuation(
+    monkeypatch: pytest.MonkeyPatch,
+    configuration: ValuationConfiguration,
+    company: CompanyFundamentals,
+    treasury: TreasuryYieldSnapshot,
+) -> None:
+    calls = []
+    profile = ValuationProfile(
+        symbol="LITE",
+        valuation_style=ValuationStyle.GROWTH,
+        valuation_eps=18.30,
+        eps_fiscal_year="FY2027",
+        target_pe=40.0,
+        use_peg_adjustment=True,
+        dcf_fair_value=None,
+        source_note="research note",
+    )
+
+    def fake_download_company(symbol: str) -> CompanyFundamentals:
+        calls.append(("company", symbol))
+        return company
+
+    def fake_download_treasury(config: TreasuryHistoryConfig) -> TreasuryYieldSnapshot:
+        calls.append(("treasury", config))
+        return treasury
+
+    monkeypatch.setattr(
+        stock_analysis,
+        "download_company_fundamentals",
+        fake_download_company,
+    )
+    monkeypatch.setattr(
+        stock_analysis,
+        "download_treasury_yield_snapshot",
+        fake_download_treasury,
+    )
+
+    result = analyze_stock_with_profile("lite", configuration, {"LITE": profile})
+
+    assert isinstance(result, StockAnalysisWithProfileResult)
+    assert calls == [("company", "LITE"), ("treasury", configuration.treasury_history)]
+    assert result.profile is profile
+    assert result.research_valuation is not None
+    assert result.research_valuation.research_base_fair_value == pytest.approx(732.0)
+    assert result.research_valuation.research_adjusted_fair_value == pytest.approx(
+        599.508
+    )
+    assert result.valuation_comparison is not None
+    assert result.valuation_comparison.automatic_fair_value == pytest.approx(147.42)
+
+
+def test_analyze_stock_with_profile_returns_no_research_for_unmatched_symbol(
+    monkeypatch: pytest.MonkeyPatch,
+    configuration: ValuationConfiguration,
+    company: CompanyFundamentals,
+    treasury: TreasuryYieldSnapshot,
+) -> None:
+    monkeypatch.setattr(
+        stock_analysis,
+        "download_company_fundamentals",
+        lambda symbol: company,
+    )
+    monkeypatch.setattr(
+        stock_analysis,
+        "download_treasury_yield_snapshot",
+        lambda config: treasury,
+    )
+
+    result = analyze_stock_with_profile("lite", configuration, {})
+
+    assert result.profile is None
+    assert result.research_valuation is None
+    assert result.valuation_comparison is None
+
+
+def test_analyze_stock_with_profile_from_config_files_loads_once_and_delegates(
+    monkeypatch: pytest.MonkeyPatch,
+    configuration: ValuationConfiguration,
+) -> None:
+    calls = []
+    profiles = object()
+    expected = object()
+
+    def fake_load_configuration(path):
+        calls.append(("valuation", path))
+        return configuration
+
+    def fake_load_profiles(path):
+        calls.append(("profiles", path))
+        return profiles
+
+    def fake_analyze(symbol, loaded_configuration, loaded_profiles):
+        calls.append(("analyze", symbol, loaded_configuration, loaded_profiles))
+        return expected
+
+    monkeypatch.setattr(
+        stock_analysis,
+        "load_valuation_configuration",
+        fake_load_configuration,
+    )
+    monkeypatch.setattr(stock_analysis, "load_valuation_profiles", fake_load_profiles)
+    monkeypatch.setattr(stock_analysis, "analyze_stock_with_profile", fake_analyze)
+
+    assert (
+        analyze_stock_with_profile_from_config_files(
+            "LITE",
+            config_path="valuation.yaml",
+            profiles_path="profiles.yaml",
+        )
+        is expected
+    )
+    assert calls == [
+        ("valuation", "valuation.yaml"),
+        ("profiles", "profiles.yaml"),
+        ("analyze", "LITE", configuration, profiles),
+    ]
+
+
+def test_eps_selection_changes_fair_value_eps_only(
+    monkeypatch: pytest.MonkeyPatch,
+    configuration: ValuationConfiguration,
+    treasury: TreasuryYieldSnapshot,
+) -> None:
+    from datetime import datetime, timezone
+
+    stamp = datetime(2026, 7, 18, tzinfo=timezone.utc)
+    company = CompanyFundamentals(
+        symbol="MU",
+        company_name="Micron",
+        currency="USD",
+        current_price=80.0,
+        previous_close=None,
+        market_cap=None,
+        sector="Technology",
+        industry="Semiconductors",
+        trailing_eps=44.06,
+        forward_eps=150.77,
+        trailing_pe=None,
+        forward_pe=None,
+        peg_ratio=0.13,
+        fifty_two_week_high=None,
+        fifty_two_week_low=None,
+        analyst_target_mean_price=None,
+        analyst_target_high_price=None,
+        analyst_target_low_price=None,
+    )
+    snapshot = YahooEPSRawSnapshot(
+        symbol="MU",
+        trailing_eps=44.06,
+        forward_eps=150.77,
+        trailing_pe=None,
+        forward_pe=None,
+        peg_ratio=0.13,
+        earnings_growth=None,
+        quarterly_earnings_growth=None,
+        most_recent_quarter=None,
+        last_fiscal_year_end=None,
+        next_fiscal_year_end=None,
+        last_split_date=None,
+        shares_outstanding=None,
+        implied_shares_outstanding=None,
+        price_to_book=None,
+        current_quarter_estimate=None,
+        next_quarter_estimate=None,
+        current_year_estimate=YahooEPSEstimate("0y", 73.37, None, None, None, 10),
+        next_year_estimate=YahooEPSEstimate("+1y", 150.47, None, None, None, 10),
+        source_timestamp=stamp,
+        raw_field_sources=(
+            EPSRawFieldSource(
+                "forward_eps",
+                "yfinance.Ticker.info",
+                "forwardEps",
+                150.77,
+                None,
+                stamp,
+                None,
+            ),
+        ),
+        warnings=(),
+    )
+    eps_config = EPSSelectionConfiguration(
+        default_rule=EPSSelectionRule(
+            method=EPSSelectionMethod.LEGACY_FORWARD,
+            current_year_weight=None,
+            next_year_weight=None,
+            manual_eps=None,
+            manual_period_label=None,
+            rationale=None,
+        ),
+        symbol_rules={
+            "MU": EPSSelectionRule(
+                method=EPSSelectionMethod.CURRENT_YEAR,
+                current_year_weight=None,
+                next_year_weight=None,
+                manual_eps=None,
+                manual_period_label=None,
+                rationale="Use current EPS.",
+            )
+        },
+    )
+
+    monkeypatch.setattr(
+        stock_analysis,
+        "download_company_fundamentals_with_eps_snapshot",
+        lambda symbol: CompanyFundamentalsWithEPSRawSnapshot(company, snapshot),
+    )
+    monkeypatch.setattr(
+        stock_analysis,
+        "download_treasury_yield_snapshot",
+        lambda config: treasury,
+    )
+
+    result = analyze_stock("MU", configuration, eps_config)
+
+    assert result.valuation.forward_eps == 150.77
+    assert result.valuation.eps_growth.forward_eps == 150.77
+    assert result.valuation.target_pe.actual_eps_growth_percent == pytest.approx(
+        242.19246482069903
+    )
+    assert result.valuation.valuation_eps_used == 73.37
+    assert result.valuation.valuation_eps_method == "CURRENT_YEAR"
+    assert result.valuation.fair_value.forward_eps == 73.37
+    assert result.valuation.fair_value.base_fair_value == pytest.approx(3668.5)
+    assert result.eps_selection is not None
+    assert result.eps_selection.selected_eps == 73.37
+
+
+def test_analyze_stock_from_config_file_loads_eps_selection_when_supplied(
+    monkeypatch: pytest.MonkeyPatch,
+    configuration: ValuationConfiguration,
+) -> None:
+    calls = []
+    eps_config = object()
+    expected = object()
+
+    monkeypatch.setattr(
+        stock_analysis,
+        "load_valuation_configuration",
+        lambda path: calls.append(("valuation", path)) or configuration,
+    )
+    monkeypatch.setattr(
+        stock_analysis,
+        "load_eps_selection_configuration",
+        lambda path: calls.append(("eps", path)) or eps_config,
+    )
+    monkeypatch.setattr(
+        stock_analysis,
+        "analyze_stock",
+        lambda symbol, config, eps=None: calls.append(("analyze", symbol, config, eps)) or expected,
+    )
+
+    assert (
+        analyze_stock_from_config_file(
+            "MU",
+            config_path="valuation.yaml",
+            eps_selection_path="eps.yaml",
+        )
+        is expected
+    )
+    assert calls == [
+        ("valuation", "valuation.yaml"),
+        ("eps", "eps.yaml"),
+        ("analyze", "MU", configuration, eps_config),
+    ]
+
+
+def test_analyze_stock_applies_industry_policy_without_extra_downloads(
+    monkeypatch: pytest.MonkeyPatch,
+    configuration: ValuationConfiguration,
+    treasury: TreasuryYieldSnapshot,
+) -> None:
+    calls = []
+    company = CompanyFundamentals(
+        symbol="MU",
+        company_name="Micron",
+        currency="USD",
+        current_price=80.0,
+        previous_close=None,
+        market_cap=None,
+        sector="Technology",
+        industry="Semiconductors",
+        trailing_eps=44.06,
+        forward_eps=150.77,
+        trailing_pe=None,
+        forward_pe=5.63,
+        peg_ratio=0.13,
+        fifty_two_week_high=None,
+        fifty_two_week_low=None,
+        analyst_target_mean_price=None,
+        analyst_target_high_price=None,
+        analyst_target_low_price=None,
+    )
+    policy = IndustryValuationPolicy(
+        name="CYCLICAL",
+        valuation_style=IndustryValuationStyle.CYCLICAL,
+        target_pe_mode=TargetPEMode.FIXED,
+        fixed_target_pe=10.0,
+        minimum_target_pe=7.0,
+        maximum_target_pe=12.0,
+        use_eps_growth=False,
+        use_peg_adjustment=False,
+        use_sector_adjustment=False,
+        use_forward_pe_penalty=False,
+        rationale="cyclical",
+    )
+    industry_config = IndustryPolicyConfiguration(
+        policies={"CYCLICAL": policy},
+        symbol_policy_names={"MU": "CYCLICAL"},
+    )
+
+    monkeypatch.setattr(
+        stock_analysis,
+        "download_company_fundamentals",
+        lambda symbol: calls.append(("company", symbol)) or company,
+    )
+    monkeypatch.setattr(
+        stock_analysis,
+        "download_treasury_yield_snapshot",
+        lambda config: calls.append(("treasury", config)) or treasury,
+    )
+
+    result = analyze_stock(
+        "MU",
+        configuration,
+        industry_policy_config=industry_config,
+    )
+
+    assert calls == [("company", "MU"), ("treasury", configuration.treasury_history)]
+    assert result.valuation.target_pe.recommended_target_pe == 50.0
+    assert result.valuation.target_pe_used == 10.0
+    assert result.industry_policy.policy_name == "CYCLICAL"
+    assert result.valuation.fair_value.forward_eps == 150.77
+
+
+def test_analyze_stock_from_config_file_loads_industry_policy_when_supplied(
+    monkeypatch: pytest.MonkeyPatch,
+    configuration: ValuationConfiguration,
+) -> None:
+    calls = []
+    industry_config = object()
+    expected = object()
+
+    monkeypatch.setattr(
+        stock_analysis,
+        "load_valuation_configuration",
+        lambda path: calls.append(("valuation", path)) or configuration,
+    )
+    monkeypatch.setattr(
+        stock_analysis,
+        "load_industry_policy_configuration",
+        lambda path: calls.append(("industry", path)) or industry_config,
+    )
+    monkeypatch.setattr(
+        stock_analysis,
+        "analyze_stock",
+        lambda symbol, config, eps=None, industry=None: calls.append(
+            ("analyze", symbol, config, eps, industry)
+        )
+        or expected,
+    )
+
+    assert (
+        analyze_stock_from_config_file(
+            "MU",
+            config_path="valuation.yaml",
+            industry_policies_path="industry.yaml",
+        )
+        is expected
+    )
+    assert calls == [
+        ("valuation", "valuation.yaml"),
+        ("industry", "industry.yaml"),
+        ("analyze", "MU", configuration, None, industry_config),
+    ]
 
 
 def test_service_result_dataclass_is_immutable(

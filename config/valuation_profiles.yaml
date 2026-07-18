@@ -1,0 +1,27 @@
+profiles:
+  MU:
+    valuation_style: cyclical
+    valuation_eps: 73.39
+    eps_fiscal_year: FY2026
+    target_pe: 10.0
+    use_peg_adjustment: false
+    dcf_fair_value: 618.10
+    source_note: "2026-07-18 memory semiconductor research"
+
+  LITE:
+    valuation_style: growth
+    valuation_eps: 18.30
+    eps_fiscal_year: FY2027
+    target_pe: 40.0
+    use_peg_adjustment: true
+    dcf_fair_value: null
+    source_note: "2026-07-18 optical communications research"
+
+  GLW:
+    valuation_style: quality_growth
+    valuation_eps: 3.20
+    eps_fiscal_year: FY2026
+    target_pe: 40.0
+    use_peg_adjustment: true
+    dcf_fair_value: null
+    source_note: "2026-07-18 optical communications research"

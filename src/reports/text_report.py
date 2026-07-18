@@ -23,6 +23,11 @@ def format_stock_analysis_report(result: StockAnalysisServiceResult) -> str:
     fair_value = valuation.fair_value
     decision = valuation.valuation_decision
     currency = company.currency
+    profile = getattr(result, "profile", None)
+    research = getattr(result, "research_valuation", None)
+    comparison = getattr(result, "valuation_comparison", None)
+    eps_selection = getattr(result, "eps_selection", None)
+    industry_policy = getattr(result, "industry_policy", None)
 
     lines: list[str] = [
         _LINE,
@@ -66,15 +71,63 @@ def format_stock_analysis_report(result: StockAnalysisServiceResult) -> str:
         "",
         "TARGET PE",
         _SECTION_LINE,
+        _row(
+            "Actual EPS Growth",
+            _format_percent(_getattr_or_none(target_pe, "actual_eps_growth_percent")),
+        ),
+        _row(
+            "Effective EPS Growth",
+            _format_percent(
+                _getattr_or_none(target_pe, "effective_eps_growth_percent")
+            ),
+        ),
+        _row(
+            "EPS Growth Capped",
+            _format_yes_no(_getattr_or_none(target_pe, "eps_growth_was_capped")),
+        ),
         _row("Growth-Based PE", _getattr_or_none(target_pe, "growth_based_pe")),
         _row("Raw Target PE", _getattr_or_none(target_pe, "raw_target_pe")),
         _row(
             "Recommended Target PE",
             _getattr_or_none(target_pe, "recommended_target_pe"),
         ),
+        *(
+            [_row("Policy Target PE", industry_policy.policy_target_pe)]
+            if industry_policy is not None
+            else []
+        ),
     ]
 
     _extend_adjustments(lines, target_pe)
+    if industry_policy is not None:
+        _extend_industry_policy(lines, industry_policy)
+
+    if eps_selection is not None:
+        lines.extend(
+            [
+                "",
+                "VALUATION EPS SELECTION",
+                _SECTION_LINE,
+                _row("Requested Method", eps_selection.requested_method),
+                _row("Applied Method", eps_selection.applied_method),
+                _row("Selection Status", eps_selection.status),
+                _row("Yahoo Forward EPS", eps_selection.legacy_forward_eps),
+                _row("Current-Year EPS", eps_selection.current_year_eps),
+                _row("Next-Year EPS", eps_selection.next_year_eps),
+                _row("Selected Valuation EPS", eps_selection.selected_eps),
+                _row("Selected Period", eps_selection.selected_period_label),
+                _row(
+                    "Difference vs Forward",
+                    _format_signed_percent(
+                        eps_selection.selected_vs_legacy_difference_percent
+                    ),
+                ),
+                _row("Fallback Reason", eps_selection.fallback_reason),
+                _row("Rationale", eps_selection.rationale),
+            ]
+        )
+        if eps_selection.warnings:
+            lines.append(_row("Selection Warning", eps_selection.warnings[0]))
 
     lines.extend(
         [
@@ -108,6 +161,40 @@ def format_stock_analysis_report(result: StockAnalysisServiceResult) -> str:
             "",
             "FAIR VALUE",
             _SECTION_LINE,
+            *(
+                [
+                    *(
+                        [
+                            _row(
+                                "Target PE Used",
+                                _getattr_or_none(valuation, "target_pe_used"),
+                            )
+                        ]
+                        if industry_policy is not None
+                        else []
+                    ),
+                    _row(
+                        "Valuation EPS Used",
+                        _getattr_or_none(valuation, "valuation_eps_used"),
+                    ),
+                    _row(
+                        "Valuation EPS Method",
+                        _getattr_or_none(valuation, "valuation_eps_method"),
+                    ),
+                ]
+                if eps_selection is not None
+                else []
+            ),
+            *(
+                [
+                    _row(
+                        "Target PE Used",
+                        _getattr_or_none(valuation, "target_pe_used"),
+                    )
+                ]
+                if industry_policy is not None and eps_selection is None
+                else []
+            ),
             _row(
                 "Base Fair Value",
                 _format_currency(_getattr_or_none(fair_value, "base_fair_value"), currency),
@@ -141,6 +228,96 @@ def format_stock_analysis_report(result: StockAnalysisServiceResult) -> str:
         ]
     )
     lines.extend(_wrap_explanation(valuation.explanation, width=_EXPLANATION_WIDTH))
+    if profile is not None:
+        lines.extend(
+            [
+                "",
+                "RESEARCH VALUATION PROFILE",
+                _SECTION_LINE,
+                _row("Valuation Style", profile.valuation_style),
+                _row("EPS Fiscal Year", profile.eps_fiscal_year),
+                _row("Research EPS", profile.valuation_eps),
+                _row("Research Target PE", profile.target_pe),
+                _row(
+                    "PEG Adjustment Enabled",
+                    _format_yes_no(profile.use_peg_adjustment),
+                ),
+                _row("Source Note", profile.source_note),
+                "",
+                "RESEARCH FAIR VALUE",
+                _SECTION_LINE,
+                _row(
+                    "Research Base Value",
+                    _format_currency(
+                        _getattr_or_none(research, "research_base_fair_value"),
+                        currency,
+                    ),
+                ),
+                _row(
+                    "Research Adjusted Value",
+                    _format_currency(
+                        _getattr_or_none(research, "research_adjusted_fair_value"),
+                        currency,
+                    ),
+                ),
+                _row(
+                    "DCF Reference",
+                    _format_currency(_getattr_or_none(research, "dcf_fair_value"), currency),
+                ),
+                "",
+                "MODEL COMPARISON",
+                _SECTION_LINE,
+                _row(
+                    "Automatic Fair Value",
+                    _format_currency(
+                        _getattr_or_none(comparison, "automatic_fair_value"),
+                        currency,
+                    ),
+                ),
+                _row(
+                    "Research Fair Value",
+                    _format_currency(
+                        _getattr_or_none(comparison, "research_fair_value"),
+                        currency,
+                    ),
+                ),
+                _row(
+                    "Automatic - Research",
+                    _format_currency(
+                        _getattr_or_none(
+                            comparison,
+                            "automatic_vs_research_difference",
+                        ),
+                        currency,
+                    ),
+                ),
+                _row(
+                    "Difference",
+                    _format_percent(
+                        _getattr_or_none(
+                            comparison,
+                            "automatic_vs_research_difference_percent",
+                        )
+                    ),
+                ),
+                _row(
+                    "Research - DCF",
+                    _format_currency(
+                        _getattr_or_none(comparison, "research_vs_dcf_difference"),
+                        currency,
+                    ),
+                ),
+                _row(
+                    "Difference vs DCF",
+                    _format_percent(
+                        _getattr_or_none(
+                            comparison,
+                            "research_vs_dcf_difference_percent",
+                        )
+                    ),
+                ),
+            ]
+        )
     lines.append(_LINE)
 
     return "\n".join(lines)
@@ -152,8 +329,56 @@ def _extend_adjustments(lines: list[str], target_pe: Any) -> None:
         return
 
     lines.extend(["", "ADJUSTMENTS", _SECTION_LINE])
+    cap_explanation = _getattr_or_none(target_pe, "eps_growth_cap_explanation")
+    if cap_explanation:
+        lines.append(_row("EPS growth cap", cap_explanation))
     for adjustment in adjustments:
         lines.append(_row(_enum_value(adjustment.label), _format_signed_number(adjustment.value)))
+
+
+def _extend_industry_policy(lines: list[str], policy: Any) -> None:
+    lines.extend(
+        [
+            "",
+            "INDUSTRY VALUATION POLICY",
+            _SECTION_LINE,
+            _row("Policy Name", policy.policy_name),
+            _row("Valuation Style", policy.valuation_style),
+            _row("Target PE Mode", policy.target_pe_mode),
+            _row("Original Target PE", policy.original_target_pe),
+            _row("Policy Target PE", policy.policy_target_pe),
+            _row(
+                "Policy PE Range",
+                _format_number_range(policy.minimum_target_pe, policy.maximum_target_pe),
+            ),
+            _row(
+                "EPS Growth Adjustment",
+                _format_enabled("EPS Growth Adjustment", policy.enabled_adjustments),
+            ),
+            _row(
+                "PEG Adjustment",
+                _format_enabled("PEG Adjustment", policy.enabled_adjustments),
+            ),
+            _row(
+                "Sector Adjustment",
+                _format_enabled("Sector Adjustment", policy.enabled_adjustments),
+            ),
+            _row(
+                "Forward PE Penalty",
+                _format_enabled("Forward PE Penalty", policy.enabled_adjustments),
+            ),
+            _row("Rationale", policy.rationale),
+        ]
+    )
+    if policy.warnings:
+        lines.append(_row("Policy Warning", policy.warnings[0]))
+    for adjustment in getattr(policy, "adjustments", ()):
+        lines.append(
+            _row(
+                _enum_value(adjustment.label),
+                _format_signed_number(adjustment.value),
+            )
+        )
 
 
 def _row(label: str, value: Any) -> str:
@@ -188,6 +413,18 @@ def _format_percent(value: Any, decimal_places: int = 2) -> str:
     return f"{value:.{decimal_places}f}%"
 
 
+def _format_signed_percent(value: Any, decimal_places: int = 2) -> str:
+    if value is None:
+        return "N/A"
+    return f"{value:+.{decimal_places}f}%"
+
+
+def _format_yes_no(value: bool | None) -> str:
+    if value is None:
+        return "N/A"
+    return "YES" if value else "NO"
+
+
 def _format_currency(value: Any, currency: str | None) -> str:
     if value is None:
         return "N/A"
@@ -203,6 +440,16 @@ def _format_currency_range(
         return "N/A"
     currency_text = _format_optional_text(currency)
     return f"{_format_number(low_value)} - {_format_number(high_value)} {currency_text}"
+
+
+def _format_number_range(low_value: Any, high_value: Any) -> str:
+    if low_value is None or high_value is None:
+        return "N/A"
+    return f"{_format_number(low_value)} - {_format_number(high_value)}"
+
+
+def _format_enabled(label: str, enabled_adjustments: Any) -> str:
+    return "ENABLED" if label in enabled_adjustments else "DISABLED"
 
 
 def _format_optional_text(value: Any) -> str:

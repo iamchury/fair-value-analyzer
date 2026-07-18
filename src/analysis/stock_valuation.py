@@ -12,6 +12,10 @@ from src.analysis.fair_value import (
     FairValueResult,
     calculate_fair_value,
 )
+from src.analysis.industry_policy import (
+    IndustryPolicyTargetPEResult,
+    apply_industry_policy_to_target_pe,
+)
 from src.analysis.macro_adjustment import (
     MacroAdjustment,
     TreasuryYieldConfig,
@@ -30,6 +34,7 @@ from src.analysis.valuation_decision import (
     ValuationRecommendation,
     calculate_valuation_decision,
 )
+from src.config.industry_policies import IndustryPolicyConfiguration
 
 
 class StockValuationStatus(str, Enum):
@@ -52,6 +57,9 @@ class StockValuationInputs:
     treasury_current_yield_percent: float
     treasury_short_sma_percent: float
     treasury_long_sma_percent: float
+    valuation_eps: float | None = None
+    valuation_eps_period: str | None = None
+    valuation_eps_method: str | None = None
 
 
 @dataclass(frozen=True)
@@ -59,6 +67,7 @@ class StockValuationConfig:
     target_pe: TargetPEConfig
     treasury_yield: TreasuryYieldConfig
     decision: ValuationDecisionConfig
+    industry_policy: IndustryPolicyConfiguration | None = None
 
 
 @dataclass(frozen=True)
@@ -74,6 +83,11 @@ class StockValuationResult:
     fair_value: FairValueResult | None
     valuation_decision: ValuationDecisionResult | None
     explanation: str
+    valuation_eps_used: float | None = None
+    valuation_eps_period: str | None = None
+    valuation_eps_method: str | None = None
+    target_pe_used: float | None = None
+    industry_policy: IndustryPolicyTargetPEResult | None = None
 
 
 def validate_stock_valuation_inputs(inputs: StockValuationInputs) -> None:
@@ -82,6 +96,7 @@ def validate_stock_valuation_inputs(inputs: StockValuationInputs) -> None:
     _require_positive_number("current_price", inputs.current_price)
     _require_optional_number("trailing_eps", inputs.trailing_eps)
     _require_optional_number("forward_eps", inputs.forward_eps)
+    _require_optional_number("valuation_eps", inputs.valuation_eps)
     _require_optional_positive_number("peg_ratio", inputs.peg_ratio)
     _require_optional_number("current_forward_pe", inputs.current_forward_pe)
     _require_treasury_percent(
@@ -134,16 +149,31 @@ def calculate_stock_valuation(
     if eps_growth.growth_percent is None:
         raise ValueError("usable EPS growth must include growth_percent.")
 
+    target_pe_inputs = TargetPEInputs(
+        forward_eps_growth_percent=eps_growth.growth_percent,
+        peg_ratio=inputs.peg_ratio,
+        sector=inputs.sector,
+        industry=inputs.industry,
+        current_forward_pe=inputs.current_forward_pe,
+    )
     target_pe = recommend_target_pe(
-        TargetPEInputs(
-            forward_eps_growth_percent=eps_growth.growth_percent,
-            peg_ratio=inputs.peg_ratio,
-            sector=inputs.sector,
-            industry=inputs.industry,
-            current_forward_pe=inputs.current_forward_pe,
-        ),
+        target_pe_inputs,
         config.target_pe,
     )
+    policy_result = None
+    target_pe_used = target_pe.recommended_target_pe
+    if config.industry_policy is not None:
+        candidate_policy_result = apply_industry_policy_to_target_pe(
+            symbol,
+            target_pe,
+            target_pe_inputs,
+            config.target_pe,
+            config.industry_policy,
+        )
+        if candidate_policy_result.policy_applied:
+            policy_result = candidate_policy_result
+            target_pe_used = candidate_policy_result.policy_target_pe
+
     macro_adjustment = calculate_macro_adjustment(
         inputs.treasury_current_yield_percent,
         inputs.treasury_short_sma_percent,
@@ -151,7 +181,19 @@ def calculate_stock_valuation(
         config.treasury_yield,
     )
 
-    if inputs.forward_eps is None:
+    valuation_eps = inputs.forward_eps if inputs.valuation_eps is None else inputs.valuation_eps
+    valuation_eps_period = (
+        "Yahoo forwardEps"
+        if inputs.valuation_eps_period is None
+        else inputs.valuation_eps_period
+    )
+    valuation_eps_method = (
+        "LEGACY_FORWARD"
+        if inputs.valuation_eps_method is None
+        else inputs.valuation_eps_method
+    )
+
+    if valuation_eps is None:
         return StockValuationResult(
             symbol=symbol,
             status=StockValuationStatus.FAIR_VALUE_UNAVAILABLE,
@@ -167,12 +209,17 @@ def calculate_stock_valuation(
                 "Target PE and macro adjustment were calculated, but Forward EPS "
                 "was unavailable for fair-value calculation."
             ),
+            valuation_eps_used=None,
+            valuation_eps_period=valuation_eps_period,
+            valuation_eps_method=valuation_eps_method,
+            target_pe_used=target_pe_used,
+            industry_policy=policy_result,
         )
 
     fair_value = calculate_fair_value(
         FairValueInputs(
-            forward_eps=inputs.forward_eps,
-            recommended_target_pe=target_pe.recommended_target_pe,
+            forward_eps=valuation_eps,
+            recommended_target_pe=target_pe_used,
             macro_adjustment_multiplier=(
                 macro_adjustment.total_adjustment_multiplier
             ),
@@ -211,6 +258,11 @@ def calculate_stock_valuation(
         fair_value=fair_value,
         valuation_decision=valuation_decision,
         explanation=explanation,
+        valuation_eps_used=valuation_eps,
+        valuation_eps_period=valuation_eps_period,
+        valuation_eps_method=valuation_eps_method,
+        target_pe_used=target_pe_used,
+        industry_policy=policy_result,
     )
 
 

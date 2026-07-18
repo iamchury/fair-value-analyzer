@@ -24,6 +24,7 @@ def config() -> TargetPEConfig:
         minimum_target_pe=15.0,
         maximum_target_pe=50.0,
         default_target_peg=1.0,
+        maximum_eps_growth_percent=40.0,
         low_peg_threshold=1.0,
         normal_peg_upper_threshold=1.5,
         high_peg_threshold=2.0,
@@ -53,14 +54,14 @@ def test_valid_config_passes(config: TargetPEConfig) -> None:
 @pytest.mark.parametrize(
     "bad_config",
     [
-        TargetPEConfig(0, 50, 1, 1, 1.5, 2, 5, 0, -2, -5, 5, 0, 1.5, -2, ("A",)),
-        TargetPEConfig(15, 15, 1, 1, 1.5, 2, 5, 0, -2, -5, 5, 0, 1.5, -2, ("A",)),
-        TargetPEConfig(15, 50, 0, 1, 1.5, 2, 5, 0, -2, -5, 5, 0, 1.5, -2, ("A",)),
-        TargetPEConfig(15, 50, 1, 0, 1.5, 2, 5, 0, -2, -5, 5, 0, 1.5, -2, ("A",)),
-        TargetPEConfig(15, 50, 1, 1, 1, 2, 5, 0, -2, -5, 5, 0, 1.5, -2, ("A",)),
-        TargetPEConfig(15, 50, 1, 1, 1.5, 1.5, 5, 0, -2, -5, 5, 0, 1.5, -2, ("A",)),
-        TargetPEConfig(15, 50, 1, 1, 1.5, 2, 5, 0, -2, -5, 5, 0, 0, -2, ("A",)),
-        TargetPEConfig(15, 50, 1, 1, 1.5, 2, 5, 0, -2, -5, 5, 0, 1.5, -2, ("",)),
+        TargetPEConfig(0, 50, 1, 40, 1, 1.5, 2, 5, 0, -2, -5, 5, 0, 1.5, -2, ("A",)),
+        TargetPEConfig(15, 15, 1, 40, 1, 1.5, 2, 5, 0, -2, -5, 5, 0, 1.5, -2, ("A",)),
+        TargetPEConfig(15, 50, 0, 40, 1, 1.5, 2, 5, 0, -2, -5, 5, 0, 1.5, -2, ("A",)),
+        TargetPEConfig(15, 50, 1, 40, 0, 1.5, 2, 5, 0, -2, -5, 5, 0, 1.5, -2, ("A",)),
+        TargetPEConfig(15, 50, 1, 40, 1, 1, 2, 5, 0, -2, -5, 5, 0, 1.5, -2, ("A",)),
+        TargetPEConfig(15, 50, 1, 40, 1, 1.5, 1.5, 5, 0, -2, -5, 5, 0, 1.5, -2, ("A",)),
+        TargetPEConfig(15, 50, 1, 40, 1, 1.5, 2, 5, 0, -2, -5, 5, 0, 0, -2, ("A",)),
+        TargetPEConfig(15, 50, 1, 40, 1, 1.5, 2, 5, 0, -2, -5, 5, 0, 1.5, -2, ("",)),
     ],
 )
 def test_invalid_configurations_raise(bad_config: TargetPEConfig) -> None:
@@ -77,6 +78,7 @@ def test_nan_and_infinity_config_values_raise(
         minimum_target_pe=config.minimum_target_pe,
         maximum_target_pe=config.maximum_target_pe,
         default_target_peg=bad_value,
+        maximum_eps_growth_percent=config.maximum_eps_growth_percent,
         low_peg_threshold=config.low_peg_threshold,
         normal_peg_upper_threshold=config.normal_peg_upper_threshold,
         high_peg_threshold=config.high_peg_threshold,
@@ -123,7 +125,7 @@ def test_invalid_current_forward_pe_input_raises(bad_forward_pe: float) -> None:
 
 @pytest.mark.parametrize(
     ("growth", "expected_pe"),
-    [(40, 40), (25, 25), (10, 10), (0, 0), (-5, -5)],
+    [(40, 40), (25, 25), (10, 10), (0, 0), (-5, -5), (60, 40)],
 )
 def test_growth_based_pe(
     config: TargetPEConfig,
@@ -131,6 +133,63 @@ def test_growth_based_pe(
     expected_pe: float,
 ) -> None:
     assert calculate_growth_based_pe(growth, config) == expected_pe
+
+
+@pytest.mark.parametrize("valid_cap", [20, 40.0, 100])
+def test_valid_maximum_eps_growth_percent_values(
+    config: TargetPEConfig,
+    valid_cap: float,
+) -> None:
+    validate_target_pe_config(
+        TargetPEConfig(**{**config.__dict__, "maximum_eps_growth_percent": valid_cap})
+    )
+
+
+@pytest.mark.parametrize("bad_cap", [0, -1, True, nan, inf, -inf, "40", None, 501])
+def test_invalid_maximum_eps_growth_percent_values(
+    config: TargetPEConfig,
+    bad_cap: object,
+) -> None:
+    with pytest.raises(ValueError):
+        validate_target_pe_config(
+            TargetPEConfig(**{**config.__dict__, "maximum_eps_growth_percent": bad_cap})
+        )
+
+
+@pytest.mark.parametrize(
+    (
+        "actual_growth",
+        "expected_effective_growth",
+        "expected_capped",
+        "expected_growth_based_pe",
+    ),
+    [
+        (20.0, 20.0, False, 20.0),
+        (40.0, 40.0, False, 40.0),
+        (223.92, 40.0, True, 40.0),
+        (-10.0, -10.0, False, -10.0),
+    ],
+)
+def test_effective_eps_growth_explainability(
+    config: TargetPEConfig,
+    actual_growth: float,
+    expected_effective_growth: float,
+    expected_capped: bool,
+    expected_growth_based_pe: float,
+) -> None:
+    result = recommend_target_pe(
+        TargetPEInputs(actual_growth, None, None, None, None),
+        config,
+    )
+
+    assert result.actual_eps_growth_percent == actual_growth
+    assert result.effective_eps_growth_percent == expected_effective_growth
+    assert result.eps_growth_was_capped is expected_capped
+    assert result.growth_based_pe == expected_growth_based_pe
+    if expected_capped:
+        assert result.eps_growth_cap_explanation == "EPS growth cap: 223.92% -> 40.00%"
+    else:
+        assert result.eps_growth_cap_explanation is None
 
 
 def test_growth_based_pe_with_non_default_target_peg(
@@ -247,6 +306,9 @@ def test_example_a_preferred_growth_stock(config: TargetPEConfig) -> None:
         config,
     )
     assert result.growth_based_pe == 28
+    assert result.actual_eps_growth_percent == 28
+    assert result.effective_eps_growth_percent == 28
+    assert result.eps_growth_was_capped is False
     assert [item.value for item in result.adjustments[:4]] == [28, 5, 5, 0]
     assert result.raw_target_pe == 38
     assert result.recommended_target_pe == 38
@@ -269,13 +331,14 @@ def test_example_c_maximum_cap(config: TargetPEConfig) -> None:
         TargetPEInputs(60, 0.8, "Technology", None, 70),
         config,
     )
-    assert [item.value for item in result.adjustments[:4]] == [60, 5, 5, 0]
-    assert result.raw_target_pe == 70
-    assert result.recommended_target_pe == 50
-    assert result.was_maximum_applied
+    assert [item.value for item in result.adjustments[:4]] == [40, 5, 5, -2]
+    assert result.actual_eps_growth_percent == 60
+    assert result.effective_eps_growth_percent == 40
+    assert result.eps_growth_was_capped is True
+    assert result.raw_target_pe == 48
+    assert result.recommended_target_pe == 48
+    assert not result.was_maximum_applied
     assert not result.was_minimum_applied
-    assert result.adjustments[-1].category == AdjustmentCategory.LIMIT
-    assert result.adjustments[-1].value == -20
 
 
 def test_example_d_minimum_floor(config: TargetPEConfig) -> None:
@@ -290,6 +353,36 @@ def test_example_d_minimum_floor(config: TargetPEConfig) -> None:
     assert not result.was_maximum_applied
     assert result.adjustments[-1].category == AdjustmentCategory.LIMIT
     assert result.adjustments[-1].value == 17
+
+
+def test_capped_growth_preserves_peg_sector_and_forward_pe_adjustments(
+    config: TargetPEConfig,
+) -> None:
+    result = recommend_target_pe(
+        TargetPEInputs(60, 0.8, "Technology", None, 70),
+        config,
+    )
+
+    assert result.growth_based_pe == 40
+    assert [item.value for item in result.adjustments[:4]] == [40, 5, 5, -2]
+    assert result.raw_target_pe == 48
+    assert result.recommended_target_pe == 48
+
+
+def test_final_maximum_clipping_still_works(config: TargetPEConfig) -> None:
+    high_cap_config = TargetPEConfig(
+        **{**config.__dict__, "maximum_eps_growth_percent": 100.0}
+    )
+
+    result = recommend_target_pe(
+        TargetPEInputs(80, 0.8, "Technology", None, 70),
+        high_cap_config,
+    )
+
+    assert result.growth_based_pe == 80
+    assert result.raw_target_pe == 90
+    assert result.recommended_target_pe == 50
+    assert result.was_maximum_applied
 
 
 def test_example_e_missing_data(config: TargetPEConfig) -> None:

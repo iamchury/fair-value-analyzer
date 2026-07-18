@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from enum import Enum
 from math import isfinite
+from typing import Any
 
 
 class AdjustmentCategory(str, Enum):
@@ -16,6 +17,7 @@ class TargetPEConfig:
     minimum_target_pe: float
     maximum_target_pe: float
     default_target_peg: float
+    maximum_eps_growth_percent: float
     low_peg_threshold: float
     normal_peg_upper_threshold: float
     high_peg_threshold: float
@@ -49,6 +51,10 @@ class TargetPEAdjustment:
 
 @dataclass(frozen=True)
 class TargetPERecommendation:
+    actual_eps_growth_percent: float
+    effective_eps_growth_percent: float
+    eps_growth_was_capped: bool
+    eps_growth_cap_explanation: str | None
     growth_based_pe: float
     raw_target_pe: float
     recommended_target_pe: float
@@ -65,6 +71,7 @@ def validate_target_pe_config(config: TargetPEConfig) -> None:
         ("minimum_target_pe", config.minimum_target_pe),
         ("maximum_target_pe", config.maximum_target_pe),
         ("default_target_peg", config.default_target_peg),
+        ("maximum_eps_growth_percent", config.maximum_eps_growth_percent),
         ("low_peg_threshold", config.low_peg_threshold),
         ("normal_peg_upper_threshold", config.normal_peg_upper_threshold),
         ("high_peg_threshold", config.high_peg_threshold),
@@ -88,6 +95,10 @@ def validate_target_pe_config(config: TargetPEConfig) -> None:
         raise ValueError("maximum_target_pe must be greater than minimum_target_pe.")
     if config.default_target_peg <= 0:
         raise ValueError("default_target_peg must be greater than 0.")
+    if config.maximum_eps_growth_percent <= 0:
+        raise ValueError("maximum_eps_growth_percent must be greater than 0.")
+    if config.maximum_eps_growth_percent > 500:
+        raise ValueError("maximum_eps_growth_percent must be no more than 500.")
     if config.low_peg_threshold <= 0:
         raise ValueError("low_peg_threshold must be greater than 0.")
     if config.normal_peg_upper_threshold <= config.low_peg_threshold:
@@ -128,7 +139,21 @@ def calculate_growth_based_pe(
     """Calculate PE implied by EPS growth and target PEG."""
     validate_target_pe_config(config)
     _require_finite("forward_eps_growth_percent", forward_eps_growth_percent)
-    return forward_eps_growth_percent * config.default_target_peg
+    effective_growth_percent = calculate_effective_eps_growth_percent(
+        forward_eps_growth_percent,
+        config,
+    )
+    return effective_growth_percent * config.default_target_peg
+
+
+def calculate_effective_eps_growth_percent(
+    forward_eps_growth_percent: float,
+    config: TargetPEConfig,
+) -> float:
+    """Cap EPS growth used by Target PE while preserving negative growth."""
+    validate_target_pe_config(config)
+    _require_finite("forward_eps_growth_percent", forward_eps_growth_percent)
+    return min(forward_eps_growth_percent, config.maximum_eps_growth_percent)
 
 
 def calculate_peg_adjustment(
@@ -266,16 +291,20 @@ def recommend_target_pe(
     validate_target_pe_config(config)
     validate_target_pe_inputs(inputs)
 
-    growth_based_pe = calculate_growth_based_pe(
+    effective_eps_growth_percent = calculate_effective_eps_growth_percent(
         inputs.forward_eps_growth_percent,
         config,
     )
+    eps_growth_was_capped = (
+        effective_eps_growth_percent < inputs.forward_eps_growth_percent
+    )
+    growth_based_pe = effective_eps_growth_percent * config.default_target_peg
     growth_adjustment = TargetPEAdjustment(
         category=AdjustmentCategory.GROWTH,
         label="EPS growth",
         value=growth_based_pe,
         explanation=(
-            f"Forward EPS growth of {inputs.forward_eps_growth_percent}% "
+            f"Effective Forward EPS growth of {effective_eps_growth_percent}% "
             f"produced a base PE of {growth_based_pe}."
         ),
     )
@@ -316,6 +345,14 @@ def recommend_target_pe(
         )
 
     return TargetPERecommendation(
+        actual_eps_growth_percent=inputs.forward_eps_growth_percent,
+        effective_eps_growth_percent=effective_eps_growth_percent,
+        eps_growth_was_capped=eps_growth_was_capped,
+        eps_growth_cap_explanation=_build_eps_growth_cap_explanation(
+            inputs.forward_eps_growth_percent,
+            effective_eps_growth_percent,
+            eps_growth_was_capped,
+        ),
         growth_based_pe=growth_based_pe,
         raw_target_pe=raw_target_pe,
         recommended_target_pe=recommended_target_pe,
@@ -333,6 +370,19 @@ def _no_forward_pe_adjustment(explanation: str) -> TargetPEAdjustment:
         label="No current Forward PE penalty",
         value=0.0,
         explanation=explanation,
+    )
+
+
+def _build_eps_growth_cap_explanation(
+    actual_eps_growth_percent: float,
+    effective_eps_growth_percent: float,
+    eps_growth_was_capped: bool,
+) -> str | None:
+    if not eps_growth_was_capped:
+        return None
+    return (
+        "EPS growth cap: "
+        f"{actual_eps_growth_percent:.2f}% -> {effective_eps_growth_percent:.2f}%"
     )
 
 
@@ -370,6 +420,8 @@ def _normalize_text(value: str | None) -> str | None:
     return normalized or None
 
 
-def _require_finite(field_name: str, value: float) -> None:
+def _require_finite(field_name: str, value: Any) -> None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{field_name} must be a finite number.")
     if not isfinite(value):
         raise ValueError(f"{field_name} must be finite.")
