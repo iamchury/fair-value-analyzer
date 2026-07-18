@@ -53,6 +53,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--industry-policies",
         help="Path to optional industry valuation policy YAML.",
     )
+    parser.add_argument(
+        "--analyst-consensus",
+        help="Path to optional analyst consensus valuation YAML.",
+    )
+    parser.add_argument(
+        "--show-snapshots",
+        action="store_true",
+        help="Append diagnostic unified valuation snapshot output.",
+    )
     return parser
 
 
@@ -68,6 +77,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error("--inspect-eps cannot be combined with --eps-selection.")
     if args.inspect_eps and args.industry_policies:
         parser.error("--inspect-eps cannot be combined with --industry-policies.")
+    if args.inspect_eps and args.analyst_consensus:
+        parser.error("--inspect-eps cannot be combined with --analyst-consensus.")
+    if args.inspect_eps and args.show_snapshots:
+        parser.error("--inspect-eps cannot be combined with --show-snapshots.")
 
     try:
         dependencies = _load_runtime_dependencies()
@@ -84,13 +97,38 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         if args.stocks:
             if args.profiles:
-                if args.eps_selection and args.industry_policies:
+                if args.eps_selection and args.industry_policies and args.analyst_consensus:
                     result = dependencies.batch_profile_analyzer(
                         stocks_path=args.stocks,
                         valuation_config_path=args.config,
                         profiles_path=args.profiles,
                         eps_selection_path=args.eps_selection,
                         industry_policies_path=args.industry_policies,
+                        analyst_consensus_path=args.analyst_consensus,
+                    )
+                elif args.eps_selection and args.industry_policies:
+                    result = dependencies.batch_profile_analyzer(
+                        stocks_path=args.stocks,
+                        valuation_config_path=args.config,
+                        profiles_path=args.profiles,
+                        eps_selection_path=args.eps_selection,
+                        industry_policies_path=args.industry_policies,
+                    )
+                elif args.eps_selection and args.analyst_consensus:
+                    result = dependencies.batch_profile_analyzer(
+                        stocks_path=args.stocks,
+                        valuation_config_path=args.config,
+                        profiles_path=args.profiles,
+                        eps_selection_path=args.eps_selection,
+                        analyst_consensus_path=args.analyst_consensus,
+                    )
+                elif args.industry_policies and args.analyst_consensus:
+                    result = dependencies.batch_profile_analyzer(
+                        stocks_path=args.stocks,
+                        valuation_config_path=args.config,
+                        profiles_path=args.profiles,
+                        industry_policies_path=args.industry_policies,
+                        analyst_consensus_path=args.analyst_consensus,
                     )
                 elif args.eps_selection:
                     result = dependencies.batch_profile_analyzer(
@@ -105,6 +143,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                         valuation_config_path=args.config,
                         profiles_path=args.profiles,
                         industry_policies_path=args.industry_policies,
+                    )
+                elif args.analyst_consensus:
+                    result = dependencies.batch_profile_analyzer(
+                        stocks_path=args.stocks,
+                        valuation_config_path=args.config,
+                        profiles_path=args.profiles,
+                        analyst_consensus_path=args.analyst_consensus,
                     )
                 else:
                     result = dependencies.batch_profile_analyzer(
@@ -113,12 +158,34 @@ def main(argv: Sequence[str] | None = None) -> int:
                         profiles_path=args.profiles,
                     )
             else:
-                if args.eps_selection and args.industry_policies:
+                if args.eps_selection and args.industry_policies and args.analyst_consensus:
                     result = dependencies.batch_analyzer(
                         stocks_path=args.stocks,
                         valuation_config_path=args.config,
                         eps_selection_path=args.eps_selection,
                         industry_policies_path=args.industry_policies,
+                        analyst_consensus_path=args.analyst_consensus,
+                    )
+                elif args.eps_selection and args.industry_policies:
+                    result = dependencies.batch_analyzer(
+                        stocks_path=args.stocks,
+                        valuation_config_path=args.config,
+                        eps_selection_path=args.eps_selection,
+                        industry_policies_path=args.industry_policies,
+                    )
+                elif args.eps_selection and args.analyst_consensus:
+                    result = dependencies.batch_analyzer(
+                        stocks_path=args.stocks,
+                        valuation_config_path=args.config,
+                        eps_selection_path=args.eps_selection,
+                        analyst_consensus_path=args.analyst_consensus,
+                    )
+                elif args.industry_policies and args.analyst_consensus:
+                    result = dependencies.batch_analyzer(
+                        stocks_path=args.stocks,
+                        valuation_config_path=args.config,
+                        industry_policies_path=args.industry_policies,
+                        analyst_consensus_path=args.analyst_consensus,
                     )
                 elif args.eps_selection:
                     result = dependencies.batch_analyzer(
@@ -132,12 +199,22 @@ def main(argv: Sequence[str] | None = None) -> int:
                         valuation_config_path=args.config,
                         industry_policies_path=args.industry_policies,
                     )
+                elif args.analyst_consensus:
+                    result = dependencies.batch_analyzer(
+                        stocks_path=args.stocks,
+                        valuation_config_path=args.config,
+                        analyst_consensus_path=args.analyst_consensus,
+                    )
                 else:
                     result = dependencies.batch_analyzer(
                         stocks_path=args.stocks,
                         valuation_config_path=args.config,
                     )
-            report = dependencies.batch_formatter(result)
+            report = (
+                dependencies.batch_formatter(result, show_snapshots=True)
+                if args.show_snapshots
+                else dependencies.batch_formatter(result)
+            )
             print(report)
             if result.failure_count == 0:
                 return 0
@@ -146,13 +223,38 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 3
 
         if args.profiles:
-            if args.eps_selection and args.industry_policies:
+            if args.eps_selection and args.industry_policies and args.analyst_consensus:
                 result = dependencies.single_profile_analyzer(
                     symbol=args.symbol,
                     config_path=args.config,
                     profiles_path=args.profiles,
                     eps_selection_path=args.eps_selection,
                     industry_policies_path=args.industry_policies,
+                    analyst_consensus_path=args.analyst_consensus,
+                )
+            elif args.eps_selection and args.industry_policies:
+                result = dependencies.single_profile_analyzer(
+                    symbol=args.symbol,
+                    config_path=args.config,
+                    profiles_path=args.profiles,
+                    eps_selection_path=args.eps_selection,
+                    industry_policies_path=args.industry_policies,
+                )
+            elif args.eps_selection and args.analyst_consensus:
+                result = dependencies.single_profile_analyzer(
+                    symbol=args.symbol,
+                    config_path=args.config,
+                    profiles_path=args.profiles,
+                    eps_selection_path=args.eps_selection,
+                    analyst_consensus_path=args.analyst_consensus,
+                )
+            elif args.industry_policies and args.analyst_consensus:
+                result = dependencies.single_profile_analyzer(
+                    symbol=args.symbol,
+                    config_path=args.config,
+                    profiles_path=args.profiles,
+                    industry_policies_path=args.industry_policies,
+                    analyst_consensus_path=args.analyst_consensus,
                 )
             elif args.eps_selection:
                 result = dependencies.single_profile_analyzer(
@@ -167,6 +269,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                     config_path=args.config,
                     profiles_path=args.profiles,
                     industry_policies_path=args.industry_policies,
+                )
+            elif args.analyst_consensus:
+                result = dependencies.single_profile_analyzer(
+                    symbol=args.symbol,
+                    config_path=args.config,
+                    profiles_path=args.profiles,
+                    analyst_consensus_path=args.analyst_consensus,
                 )
             else:
                 result = dependencies.single_profile_analyzer(
@@ -175,12 +284,34 @@ def main(argv: Sequence[str] | None = None) -> int:
                     profiles_path=args.profiles,
                 )
         else:
-            if args.eps_selection and args.industry_policies:
+            if args.eps_selection and args.industry_policies and args.analyst_consensus:
                 result = dependencies.single_analyzer(
                     symbol=args.symbol,
                     config_path=args.config,
                     eps_selection_path=args.eps_selection,
                     industry_policies_path=args.industry_policies,
+                    analyst_consensus_path=args.analyst_consensus,
+                )
+            elif args.eps_selection and args.industry_policies:
+                result = dependencies.single_analyzer(
+                    symbol=args.symbol,
+                    config_path=args.config,
+                    eps_selection_path=args.eps_selection,
+                    industry_policies_path=args.industry_policies,
+                )
+            elif args.eps_selection and args.analyst_consensus:
+                result = dependencies.single_analyzer(
+                    symbol=args.symbol,
+                    config_path=args.config,
+                    eps_selection_path=args.eps_selection,
+                    analyst_consensus_path=args.analyst_consensus,
+                )
+            elif args.industry_policies and args.analyst_consensus:
+                result = dependencies.single_analyzer(
+                    symbol=args.symbol,
+                    config_path=args.config,
+                    industry_policies_path=args.industry_policies,
+                    analyst_consensus_path=args.analyst_consensus,
                 )
             elif args.eps_selection:
                 result = dependencies.single_analyzer(
@@ -194,12 +325,22 @@ def main(argv: Sequence[str] | None = None) -> int:
                     config_path=args.config,
                     industry_policies_path=args.industry_policies,
                 )
+            elif args.analyst_consensus:
+                result = dependencies.single_analyzer(
+                    symbol=args.symbol,
+                    config_path=args.config,
+                    analyst_consensus_path=args.analyst_consensus,
+                )
             else:
                 result = dependencies.single_analyzer(
                     symbol=args.symbol,
                     config_path=args.config,
                 )
-        report = dependencies.single_formatter(result)
+        report = (
+            dependencies.single_formatter(result, show_snapshots=True)
+            if args.show_snapshots
+            else dependencies.single_formatter(result)
+        )
     except dependencies.expected_errors as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
@@ -293,6 +434,7 @@ def _load_runtime_dependencies() -> _RuntimeDependencies:
         format_eps_inspection_report = eps_report_formatter
     if _EXPECTED_ERRORS is None:
         from src.config.stocks import StocksConfigurationError
+        from src.config.analyst_consensus import AnalystConsensusConfigurationError
         from src.config.eps_selection import EPSSelectionConfigurationError
         from src.config.industry_policies import IndustryPolicyConfigurationError
         from src.config.valuation import ValuationConfigurationError
@@ -302,6 +444,7 @@ def _load_runtime_dependencies() -> _RuntimeDependencies:
 
         _EXPECTED_ERRORS = (
             EPSInspectionServiceError,
+            AnalystConsensusConfigurationError,
             EPSSelectionConfigurationError,
             IndustryPolicyConfigurationError,
             StockAnalysisServiceError,

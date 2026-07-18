@@ -13,7 +13,10 @@ _LABEL_WIDTH = 24
 _EXPLANATION_WIDTH = 76
 
 
-def format_stock_analysis_report(result: StockAnalysisServiceResult) -> str:
+def format_stock_analysis_report(
+    result: StockAnalysisServiceResult,
+    show_snapshots: bool = False,
+) -> str:
     """Format a stock analysis service result as deterministic plain text."""
     company = result.company
     treasury = result.treasury
@@ -28,6 +31,7 @@ def format_stock_analysis_report(result: StockAnalysisServiceResult) -> str:
     comparison = getattr(result, "valuation_comparison", None)
     eps_selection = getattr(result, "eps_selection", None)
     industry_policy = getattr(result, "industry_policy", None)
+    analyst = getattr(result, "analyst_consensus", None)
 
     lines: list[str] = [
         _LINE,
@@ -128,6 +132,9 @@ def format_stock_analysis_report(result: StockAnalysisServiceResult) -> str:
         )
         if eps_selection.warnings:
             lines.append(_row("Selection Warning", eps_selection.warnings[0]))
+
+    if analyst is not None:
+        _extend_analyst_consensus(lines, analyst, currency)
 
     lines.extend(
         [
@@ -316,8 +323,67 @@ def format_stock_analysis_report(result: StockAnalysisServiceResult) -> str:
                         )
                     ),
                 ),
+                *(
+                    [
+                        _row(
+                            "Analyst Fair Value",
+                            _format_currency(
+                                _getattr_or_none(
+                                    analyst,
+                                    "adjusted_analyst_fair_value",
+                                ),
+                                currency,
+                            ),
+                        ),
+                        _row(
+                            "Analyst Quality",
+                            _getattr_or_none(analyst, "consensus_quality"),
+                        ),
+                        _row(
+                            "Analyst - Automatic",
+                            _format_currency(
+                                _difference(
+                                    _getattr_or_none(
+                                        analyst,
+                                        "adjusted_analyst_fair_value",
+                                    ),
+                                    _getattr_or_none(
+                                        comparison,
+                                        "automatic_fair_value",
+                                    ),
+                                ),
+                                currency,
+                            ),
+                        ),
+                        _row(
+                            "Analyst - Research",
+                            _format_currency(
+                                _difference(
+                                    _getattr_or_none(
+                                        analyst,
+                                        "adjusted_analyst_fair_value",
+                                    ),
+                                    _getattr_or_none(
+                                        comparison,
+                                        "research_fair_value",
+                                    ),
+                                ),
+                                currency,
+                            ),
+                        ),
+                    ]
+                    if analyst is not None
+                    else []
+                ),
             ]
         )
+    if show_snapshots:
+        _extend_snapshot_report(
+            lines,
+            getattr(result, "valuation_snapshots", None),
+            currency,
+        )
+
     lines.append(_LINE)
 
     return "\n".join(lines)
@@ -379,6 +445,110 @@ def _extend_industry_policy(lines: list[str], policy: Any) -> None:
                 _format_signed_number(adjustment.value),
             )
         )
+
+
+def _extend_analyst_consensus(lines: list[str], analyst: Any, currency: str | None) -> None:
+    lines.extend(
+        [
+            "",
+            "ANALYST CONSENSUS MODEL",
+            _SECTION_LINE,
+            _row("Status", analyst.status),
+            _row("Fair Value Method", analyst.fair_value_method),
+            _row("Analyst Count", analyst.analyst_count),
+            _row("Target Mean", _format_currency(analyst.target_mean, currency)),
+            _row("Target High", _format_currency(analyst.target_high, currency)),
+            _row("Target Low", _format_currency(analyst.target_low, currency)),
+            _row("Target Midpoint", _format_currency(analyst.target_midpoint, currency)),
+            _row("Target Range", _format_currency(analyst.target_range, currency)),
+            _row("Dispersion", _format_percent(analyst.dispersion_percent)),
+            _row("Dispersion Level", analyst.dispersion_level),
+            _row("Consensus Quality", analyst.consensus_quality),
+            _row("Mean Upside", _format_percent(analyst.mean_upside_percent)),
+            _row("Low Upside", _format_percent(analyst.low_upside_percent)),
+            _row("High Upside", _format_percent(analyst.high_upside_percent)),
+            _row(
+                "Raw Analyst Fair Value",
+                _format_currency(analyst.raw_analyst_fair_value, currency),
+            ),
+            _row("Treasury Applied", _format_yes_no(analyst.treasury_applied)),
+            _row(
+                "Analyst Fair Value",
+                _format_currency(analyst.adjusted_analyst_fair_value, currency),
+            ),
+            _row("Analyst Target As Of", analyst.analyst_target_as_of),
+            _row("Retrieved At", analyst.retrieved_at),
+            _row("Rationale", analyst.rationale),
+        ]
+    )
+    if analyst.warnings:
+        lines.extend(["", "ANALYST WARNINGS", _SECTION_LINE])
+        for warning in analyst.warnings:
+            lines.append(f"- {warning}")
+
+
+def _extend_snapshot_report(lines: list[str], collection: Any, currency: str | None) -> None:
+    snapshots = tuple(getattr(collection, "snapshots", ()) or ())
+    if not snapshots:
+        lines.extend(
+            [
+                "",
+                "UNIFIED VALUATION SNAPSHOTS",
+                _SECTION_LINE,
+                "No valuation snapshots available.",
+            ]
+        )
+        return
+
+    lines.extend(
+        [
+            "",
+            "UNIFIED VALUATION SNAPSHOTS",
+            _SECTION_LINE,
+            f"{'Model':<18} {'Selected Value':>16} {'Status':<10} "
+            f"{'Confidence':<12} {'Value Type':<18}",
+        ]
+    )
+    for snapshot in snapshots:
+        lines.append(
+            f"{_format_optional_text(snapshot.model_type):<18} "
+            f"{_format_currency(snapshot.selected_fair_value, snapshot.currency or currency):>16} "
+            f"{_format_optional_text(snapshot.status):<10} "
+            f"{_format_optional_text(snapshot.confidence):<12} "
+            f"{_format_optional_text(snapshot.value_type):<18}"
+        )
+
+    for snapshot in snapshots:
+        lines.extend(
+            [
+                "",
+                _row("Model", snapshot.model_type),
+                _row("Status", snapshot.status),
+                _row("Confidence", snapshot.confidence),
+                _row("Value Type", snapshot.value_type),
+                _row(
+                    "Raw Fair Value",
+                    _format_currency(snapshot.raw_fair_value, snapshot.currency or currency),
+                ),
+                _row(
+                    "Adjusted Fair Value",
+                    _format_currency(
+                        snapshot.adjusted_fair_value,
+                        snapshot.currency or currency,
+                    ),
+                ),
+                _row(
+                    "Selected Fair Value",
+                    _format_currency(
+                        snapshot.selected_fair_value,
+                        snapshot.currency or currency,
+                    ),
+                ),
+                _row("Methodology", snapshot.methodology),
+            ]
+        )
+        if snapshot.warnings:
+            lines.append(_row("Warnings", "; ".join(snapshot.warnings)))
 
 
 def _row(label: str, value: Any) -> str:
@@ -470,6 +640,12 @@ def _getattr_or_none(value: Any, attribute_name: str) -> Any:
     if value is None:
         return None
     return getattr(value, attribute_name)
+
+
+def _difference(left: Any, right: Any) -> float | None:
+    if left is None or right is None:
+        return None
+    return left - right
 
 
 def _enum_value(value: Any) -> str:

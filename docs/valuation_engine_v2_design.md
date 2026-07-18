@@ -1135,6 +1135,36 @@ aligned with the manually reviewed research PER model. The original automatic
 Target PE remains calculated and inspectable, while fair value uses the applied
 policy Target PE only when `--industry-policies` is supplied.
 
+### Phase 1C Implementation Note: Unified Valuation Snapshot
+
+Phase 1C introduces an immutable `ValuationSnapshot` contract and
+`ValuationSnapshotCollection` as a read-only projection over existing valuation
+results.
+
+```text
+Model-specific result
+  -> Snapshot adapter
+  -> ValuationSnapshotCollection
+  -> Future Agreement Engine
+```
+
+The initial active adapters cover Automatic PER, Research PER, and externally
+supplied DCF Reference values. Snapshots do not replace current model results,
+do not change calculations, and do not affect BUY/HOLD/SELL recommendations.
+They prepare future agreement and fair-value range engines to consume common
+model output without depending directly on every model-specific result type.
+
+### Phase 2A Implementation Note: Analyst Consensus Valuation
+
+Phase 2A introduces an independent Analyst Consensus Valuation Model using
+Yahoo analyst target mean, high, and low values. The model calculates target
+midpoint, range dispersion, a conservative analyst fair value, consensus
+quality, warnings, and calculation trace.
+
+Analyst consensus remains diagnostic in this phase. It does not affect final
+recommendation, automatic PER fair value, research PER fair value, DCF
+reference values, EPS selection, industry policy, or aggregate fair value.
+
 ## 24. Test Strategy
 
 Required categories:

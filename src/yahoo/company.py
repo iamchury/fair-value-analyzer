@@ -26,6 +26,7 @@ class CompanyFundamentals:
     analyst_target_mean_price: float | None
     analyst_target_high_price: float | None
     analyst_target_low_price: float | None
+    analyst_count: int | None = None
 
 
 @dataclass(frozen=True)
@@ -286,6 +287,14 @@ def extract_company_fundamentals(
                 "analyst_target_low_price",
             ),
             "analyst_target_low_price",
+        ),
+        analyst_count=_non_negative_int(
+            _first_present(
+                info,
+                fast_info,
+                ("numberOfAnalystOpinions", "numberOfAnalysts"),
+            ),
+            "analyst_count",
         ),
     )
 
@@ -561,6 +570,19 @@ def _non_negative(value: float | None, field_name: str) -> float | None:
     if value is not None and value < 0:
         raise ValueError(f"{field_name} must be non-negative.")
     return value
+
+
+def _non_negative_int(value: object, field_name: str) -> int | None:
+    if _is_missing(value):
+        return None
+    if isinstance(value, bool):
+        raise ValueError(f"{field_name} must not be a boolean.")
+    if isinstance(value, float) and not value.is_integer():
+        raise ValueError(f"{field_name} must be an integer.")
+    count = int(value)
+    if count < 0:
+        raise ValueError(f"{field_name} must be non-negative.")
+    return count
 
 
 def _is_missing(value: object) -> bool:

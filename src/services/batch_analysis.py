@@ -7,6 +7,10 @@ from src.config.eps_selection import (
     EPSSelectionConfiguration,
     load_eps_selection_configuration,
 )
+from src.config.analyst_consensus import (
+    AnalystConsensusConfiguration,
+    load_analyst_consensus_configuration,
+)
 from src.config.industry_policies import (
     IndustryPolicyConfiguration,
     load_industry_policy_configuration,
@@ -55,6 +59,7 @@ def analyze_stocks(
     configuration: ValuationConfiguration,
     eps_selection_config: EPSSelectionConfiguration | None = None,
     industry_policy_config: IndustryPolicyConfiguration | None = None,
+    analyst_consensus_config: AnalystConsensusConfiguration | None = None,
 ) -> BatchStockAnalysisResult:
     """Analyze stock symbols sequentially and retain per-symbol failures."""
     requested_symbols = _normalize_requested_symbols(symbols)
@@ -63,7 +68,7 @@ def analyze_stocks(
 
     for symbol in requested_symbols:
         try:
-            if eps_selection_config is None and industry_policy_config is None:
+            if eps_selection_config is None and industry_policy_config is None and analyst_consensus_config is None:
                 successful_results.append(analyze_stock(symbol, configuration))
             else:
                 successful_results.append(
@@ -72,6 +77,7 @@ def analyze_stocks(
                         configuration,
                         eps_selection_config,
                         industry_policy_config,
+                        analyst_consensus_config,
                     )
                 )
         except (StockAnalysisServiceError, ValueError, RuntimeError) as exc:
@@ -96,6 +102,7 @@ def analyze_stocks_with_profiles(
     profiles: Mapping[str, ValuationProfile],
     eps_selection_config: EPSSelectionConfiguration | None = None,
     industry_policy_config: IndustryPolicyConfiguration | None = None,
+    analyst_consensus_config: AnalystConsensusConfiguration | None = None,
 ) -> BatchStockAnalysisResult:
     """Analyze stock symbols sequentially using preloaded valuation profiles."""
     requested_symbols = _normalize_requested_symbols(symbols)
@@ -104,7 +111,7 @@ def analyze_stocks_with_profiles(
 
     for symbol in requested_symbols:
         try:
-            if eps_selection_config is None and industry_policy_config is None:
+            if eps_selection_config is None and industry_policy_config is None and analyst_consensus_config is None:
                 successful_results.append(
                     analyze_stock_with_profile(symbol, configuration, profiles)
                 )
@@ -116,6 +123,7 @@ def analyze_stocks_with_profiles(
                         profiles,
                         eps_selection_config,
                         industry_policy_config,
+                        analyst_consensus_config,
                     )
                 )
         except (StockAnalysisServiceError, ValueError, RuntimeError) as exc:
@@ -139,6 +147,7 @@ def analyze_stocks_from_config_files(
     valuation_config_path: str | Path = "config/valuation.yaml",
     eps_selection_path: str | Path | None = None,
     industry_policies_path: str | Path | None = None,
+    analyst_consensus_path: str | Path | None = None,
 ) -> BatchStockAnalysisResult:
     """Load configuration files once, then run sequential batch analysis."""
     valuation_configuration = load_valuation_configuration(valuation_config_path)
@@ -153,19 +162,32 @@ def analyze_stocks_from_config_files(
         if industry_policies_path is None
         else load_industry_policy_configuration(industry_policies_path)
     )
-    if eps_selection_config is None and industry_policy_config is None:
+    analyst_consensus_config = (
+        None
+        if analyst_consensus_path is None
+        else load_analyst_consensus_configuration(analyst_consensus_path)
+    )
+    if eps_selection_config is None and industry_policy_config is None and analyst_consensus_config is None:
         return analyze_stocks(stocks_configuration.symbols, valuation_configuration)
-    if industry_policy_config is None:
+    if industry_policy_config is None and analyst_consensus_config is None:
         return analyze_stocks(
             stocks_configuration.symbols,
             valuation_configuration,
             eps_selection_config,
+        )
+    if analyst_consensus_config is None:
+        return analyze_stocks(
+            stocks_configuration.symbols,
+            valuation_configuration,
+            eps_selection_config,
+            industry_policy_config,
         )
     return analyze_stocks(
         stocks_configuration.symbols,
         valuation_configuration,
         eps_selection_config,
         industry_policy_config,
+        analyst_consensus_config,
     )
 
 
@@ -175,6 +197,7 @@ def analyze_stocks_with_profiles_from_config_files(
     profiles_path: str | Path = "config/valuation_profiles.yaml",
     eps_selection_path: str | Path | None = None,
     industry_policies_path: str | Path | None = None,
+    analyst_consensus_path: str | Path | None = None,
 ) -> BatchStockAnalysisResult:
     """Load valuation, stock, and profile files once, then run batch analysis."""
     valuation_configuration = load_valuation_configuration(valuation_config_path)
@@ -190,18 +213,31 @@ def analyze_stocks_with_profiles_from_config_files(
         if industry_policies_path is None
         else load_industry_policy_configuration(industry_policies_path)
     )
-    if eps_selection_config is None and industry_policy_config is None:
+    analyst_consensus_config = (
+        None
+        if analyst_consensus_path is None
+        else load_analyst_consensus_configuration(analyst_consensus_path)
+    )
+    if eps_selection_config is None and industry_policy_config is None and analyst_consensus_config is None:
         return analyze_stocks_with_profiles(
             stocks_configuration.symbols,
             valuation_configuration,
             profiles,
         )
-    if industry_policy_config is None:
+    if industry_policy_config is None and analyst_consensus_config is None:
         return analyze_stocks_with_profiles(
             stocks_configuration.symbols,
             valuation_configuration,
             profiles,
             eps_selection_config,
+        )
+    if analyst_consensus_config is None:
+        return analyze_stocks_with_profiles(
+            stocks_configuration.symbols,
+            valuation_configuration,
+            profiles,
+            eps_selection_config,
+            industry_policy_config,
         )
     return analyze_stocks_with_profiles(
         stocks_configuration.symbols,
@@ -209,6 +245,7 @@ def analyze_stocks_with_profiles_from_config_files(
         profiles,
         eps_selection_config,
         industry_policy_config,
+        analyst_consensus_config,
     )
 
 

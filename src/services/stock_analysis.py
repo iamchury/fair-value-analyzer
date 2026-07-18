@@ -1,7 +1,13 @@
 from dataclasses import dataclass
 from collections.abc import Mapping
 from pathlib import Path
+from datetime import datetime, timezone
 
+from src.analysis.analyst_consensus import (
+    AnalystConsensusInputs,
+    AnalystConsensusResult,
+    calculate_analyst_consensus,
+)
 from src.analysis.eps_selection import (
     EPSSelectionInputs,
     EPSSelectionResult,
@@ -21,9 +27,18 @@ from src.analysis.stock_valuation import (
     StockValuationResult,
     calculate_stock_valuation,
 )
+from src.analysis.valuation_snapshot import (
+    ValuationSnapshotCollection,
+    build_valuation_snapshot_collection,
+)
 from src.config.valuation import (
     ValuationConfiguration,
     load_valuation_configuration,
+)
+from src.config.analyst_consensus import (
+    AnalystConsensusConfiguration,
+    get_analyst_consensus_rule,
+    load_analyst_consensus_configuration,
 )
 from src.config.industry_policies import (
     IndustryPolicyConfiguration,
@@ -59,6 +74,8 @@ class StockAnalysisServiceResult:
     valuation: StockValuationResult
     eps_selection: EPSSelectionResult | None = None
     industry_policy: object | None = None
+    analyst_consensus: AnalystConsensusResult | None = None
+    valuation_snapshots: ValuationSnapshotCollection | None = None
 
 
 @dataclass(frozen=True)
@@ -71,6 +88,8 @@ class StockAnalysisWithProfileResult:
     valuation_comparison: ValuationComparisonResult | None
     eps_selection: EPSSelectionResult | None = None
     industry_policy: object | None = None
+    analyst_consensus: AnalystConsensusResult | None = None
+    valuation_snapshots: ValuationSnapshotCollection | None = None
 
 
 def normalize_service_symbol(symbol: str) -> str:
@@ -128,6 +147,7 @@ def analyze_stock(
     configuration: ValuationConfiguration,
     eps_selection_config: EPSSelectionConfiguration | None = None,
     industry_policy_config: IndustryPolicyConfiguration | None = None,
+    analyst_consensus_config: AnalystConsensusConfiguration | None = None,
 ) -> StockAnalysisServiceResult:
     normalized_symbol = normalize_service_symbol(symbol)
     eps_selection = None
@@ -148,13 +168,30 @@ def analyze_stock(
         build_stock_valuation_inputs(company, treasury, eps_selection),
         build_stock_valuation_config(configuration, industry_policy_config),
     )
+    analyst_consensus = None
+    if analyst_consensus_config is not None:
+        analyst_consensus = build_analyst_consensus_result(
+            company,
+            valuation,
+            analyst_consensus_config,
+        )
 
-    return StockAnalysisServiceResult(
+    service_result = StockAnalysisServiceResult(
         company=company,
         treasury=treasury,
         valuation=valuation,
         eps_selection=eps_selection,
         industry_policy=getattr(valuation, "industry_policy", None),
+        analyst_consensus=analyst_consensus,
+    )
+    return StockAnalysisServiceResult(
+        company=service_result.company,
+        treasury=service_result.treasury,
+        valuation=service_result.valuation,
+        eps_selection=service_result.eps_selection,
+        industry_policy=service_result.industry_policy,
+        analyst_consensus=service_result.analyst_consensus,
+        valuation_snapshots=_build_valuation_snapshots_or_none(service_result),
     )
 
 
@@ -163,6 +200,7 @@ def analyze_stock_from_config_file(
     config_path: str | Path = "config/valuation.yaml",
     eps_selection_path: str | Path | None = None,
     industry_policies_path: str | Path | None = None,
+    analyst_consensus_path: str | Path | None = None,
 ) -> StockAnalysisServiceResult:
     configuration = load_valuation_configuration(config_path)
     eps_selection_config = (
@@ -175,15 +213,28 @@ def analyze_stock_from_config_file(
         if industry_policies_path is None
         else load_industry_policy_configuration(industry_policies_path)
     )
-    if eps_selection_config is None and industry_policy_config is None:
+    analyst_consensus_config = (
+        None
+        if analyst_consensus_path is None
+        else load_analyst_consensus_configuration(analyst_consensus_path)
+    )
+    if eps_selection_config is None and industry_policy_config is None and analyst_consensus_config is None:
         return analyze_stock(symbol, configuration)
-    if industry_policy_config is None:
+    if industry_policy_config is None and analyst_consensus_config is None:
         return analyze_stock(symbol, configuration, eps_selection_config)
+    if analyst_consensus_config is None:
+        return analyze_stock(
+            symbol,
+            configuration,
+            eps_selection_config,
+            industry_policy_config,
+        )
     return analyze_stock(
         symbol,
         configuration,
         eps_selection_config,
         industry_policy_config,
+        analyst_consensus_config,
     )
 
 
@@ -193,6 +244,7 @@ def analyze_stock_with_profile(
     profiles: Mapping[str, ValuationProfile] | None = None,
     eps_selection_config: EPSSelectionConfiguration | None = None,
     industry_policy_config: IndustryPolicyConfiguration | None = None,
+    analyst_consensus_config: AnalystConsensusConfiguration | None = None,
 ) -> StockAnalysisWithProfileResult:
     """Analyze one stock and attach optional configured research valuation."""
     result = analyze_stock(
@@ -200,6 +252,7 @@ def analyze_stock_with_profile(
         configuration,
         eps_selection_config,
         industry_policy_config,
+        analyst_consensus_config,
     )
     profile = None
     research = None
@@ -225,7 +278,7 @@ def analyze_stock_with_profile(
         )
         comparison = compare_valuations(automatic_fair_value, research)
 
-    return StockAnalysisWithProfileResult(
+    profile_result = StockAnalysisWithProfileResult(
         company=result.company,
         treasury=result.treasury,
         valuation=result.valuation,
@@ -234,6 +287,19 @@ def analyze_stock_with_profile(
         valuation_comparison=comparison,
         eps_selection=result.eps_selection,
         industry_policy=result.industry_policy,
+        analyst_consensus=result.analyst_consensus,
+    )
+    return StockAnalysisWithProfileResult(
+        company=profile_result.company,
+        treasury=profile_result.treasury,
+        valuation=profile_result.valuation,
+        profile=profile_result.profile,
+        research_valuation=profile_result.research_valuation,
+        valuation_comparison=profile_result.valuation_comparison,
+        eps_selection=profile_result.eps_selection,
+        industry_policy=profile_result.industry_policy,
+        analyst_consensus=profile_result.analyst_consensus,
+        valuation_snapshots=_build_valuation_snapshots_or_none(profile_result),
     )
 
 
@@ -243,6 +309,7 @@ def analyze_stock_with_profile_from_config_files(
     profiles_path: str | Path = "config/valuation_profiles.yaml",
     eps_selection_path: str | Path | None = None,
     industry_policies_path: str | Path | None = None,
+    analyst_consensus_path: str | Path | None = None,
 ) -> StockAnalysisWithProfileResult:
     configuration = load_valuation_configuration(config_path)
     profiles = load_valuation_profiles(profiles_path)
@@ -256,14 +323,27 @@ def analyze_stock_with_profile_from_config_files(
         if industry_policies_path is None
         else load_industry_policy_configuration(industry_policies_path)
     )
-    if eps_selection_config is None and industry_policy_config is None:
+    analyst_consensus_config = (
+        None
+        if analyst_consensus_path is None
+        else load_analyst_consensus_configuration(analyst_consensus_path)
+    )
+    if eps_selection_config is None and industry_policy_config is None and analyst_consensus_config is None:
         return analyze_stock_with_profile(symbol, configuration, profiles)
-    if industry_policy_config is None:
+    if industry_policy_config is None and analyst_consensus_config is None:
         return analyze_stock_with_profile(
             symbol,
             configuration,
             profiles,
             eps_selection_config,
+        )
+    if analyst_consensus_config is None:
+        return analyze_stock_with_profile(
+            symbol,
+            configuration,
+            profiles,
+            eps_selection_config,
+            industry_policy_config,
         )
     return analyze_stock_with_profile(
         symbol,
@@ -271,7 +351,43 @@ def analyze_stock_with_profile_from_config_files(
         profiles,
         eps_selection_config,
         industry_policy_config,
+        analyst_consensus_config,
     )
+
+
+def build_analyst_consensus_result(
+    company: CompanyFundamentals,
+    valuation: StockValuationResult,
+    configuration: AnalystConsensusConfiguration,
+) -> AnalystConsensusResult:
+    rule = get_analyst_consensus_rule(configuration, company.symbol)
+    multiplier = (
+        None
+        if valuation.macro_adjustment is None
+        else valuation.macro_adjustment.total_adjustment_multiplier
+    )
+    return calculate_analyst_consensus(
+        AnalystConsensusInputs(
+            symbol=company.symbol,
+            current_price=company.current_price,
+            target_mean=company.analyst_target_mean_price,
+            target_high=company.analyst_target_high_price,
+            target_low=company.analyst_target_low_price,
+            analyst_count=company.analyst_count,
+            source_timestamp=datetime.now(timezone.utc),
+            treasury_multiplier=multiplier,
+            rule=rule,
+            analyst_target_as_of=None,
+        )
+    )
+
+
+def _build_valuation_snapshots_or_none(result: object) -> ValuationSnapshotCollection | None:
+    try:
+        collection = build_valuation_snapshot_collection(result)
+    except (AttributeError, TypeError, ValueError):
+        return None
+    return collection if collection.snapshots else None
 
 
 def build_eps_selection_result(

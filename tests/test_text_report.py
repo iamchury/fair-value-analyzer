@@ -5,6 +5,13 @@ import pytest
 from src.analysis.eps_growth import EPSGrowthResult, EPSTransition
 from src.analysis.eps_selection import EPSSelectionResult, EPSSelectionStatus
 from src.analysis.fair_value import FairValueResult
+from src.analysis.analyst_consensus import (
+    AnalystConsensusResult,
+    AnalystConsensusStatus,
+    AnalystConsensusQuality,
+    AnalystDispersionLevel,
+    StaleStatus,
+)
 from src.analysis.industry_policy import IndustryPolicyTargetPEResult
 from src.analysis.macro_adjustment import MacroAdjustment, YieldTrend
 from src.analysis.research_valuation import (
@@ -22,8 +29,10 @@ from src.analysis.valuation_decision import (
     ValuationDecisionResult,
     ValuationRecommendation,
 )
+from src.analysis.valuation_snapshot import build_valuation_snapshot_collection
 from src.config.valuation_profiles import ValuationProfile, ValuationStyle
 from src.config.eps_selection import EPSSelectionMethod
+from src.config.analyst_consensus import AnalystFairValueMethod
 from src.config.industry_policies import TargetPEMode, ValuationStyle as IndustryValuationStyle
 from src.reports.text_report import format_stock_analysis_report
 from src.services.stock_analysis import (
@@ -280,6 +289,37 @@ def industry_policy_result() -> IndustryPolicyTargetPEResult:
         disabled_adjustments=(),
         rationale="Use capped growth.",
         warnings=(),
+        calculation_steps=(),
+    )
+
+
+def analyst_result() -> AnalystConsensusResult:
+    return AnalystConsensusResult(
+        symbol="LITE",
+        status=AnalystConsensusStatus.COMPLETE,
+        fair_value_method=AnalystFairValueMethod.WEIGHTED_MEAN_MIDPOINT,
+        target_mean=100.0,
+        target_high=120.0,
+        target_low=80.0,
+        target_midpoint=100.0,
+        target_range=40.0,
+        dispersion_percent=40.0,
+        dispersion_level=AnalystDispersionLevel.MEDIUM,
+        analyst_count=12,
+        consensus_quality=AnalystConsensusQuality.MODERATE,
+        current_price=80.0,
+        mean_upside_percent=25.0,
+        low_upside_percent=0.0,
+        high_upside_percent=50.0,
+        raw_analyst_fair_value=100.0,
+        treasury_applied=False,
+        treasury_multiplier=0.819,
+        adjusted_analyst_fair_value=100.0,
+        analyst_target_as_of=None,
+        retrieved_at=treasury().yield_date,
+        stale_status=StaleStatus.UNKNOWN,
+        rationale="analyst rationale",
+        warnings=("Yahoo did not provide a reliable analyst-target as-of date.",),
         calculation_steps=(),
     )
 
@@ -601,3 +641,65 @@ def test_industry_policy_section_absent_without_policy() -> None:
     assert "INDUSTRY VALUATION POLICY" not in report
     assert "Policy Target PE" not in report
     assert "Target PE Used" not in report
+
+
+def test_analyst_consensus_section_present_only_when_enabled() -> None:
+    result = StockAnalysisServiceResult(
+        company=company(),
+        treasury=treasury(),
+        valuation=valuation(),
+        analyst_consensus=analyst_result(),
+    )
+
+    report = format_stock_analysis_report(result)
+
+    assert "ANALYST CONSENSUS MODEL" in report
+    assert "Target Mean             : 100.00 USD" in report
+    assert "Target Midpoint         : 100.00 USD" in report
+    assert "Dispersion Level        : MEDIUM" in report
+    assert "Consensus Quality       : MODERATE" in report
+    assert "Analyst Fair Value      : 100.00 USD" in report
+    assert "ANALYST WARNINGS" in report
+
+
+def test_analyst_consensus_section_absent_without_model() -> None:
+    report = format_stock_analysis_report(service_result())
+
+    assert "ANALYST CONSENSUS MODEL" not in report
+
+
+def test_snapshot_section_is_absent_without_show_snapshots() -> None:
+    result = service_result(
+        valuation_snapshots=build_valuation_snapshot_collection(service_result())
+    )
+
+    report = format_stock_analysis_report(result)
+
+    assert "UNIFIED VALUATION SNAPSHOTS" not in report
+
+
+def test_snapshot_section_is_present_with_show_snapshots() -> None:
+    base = research_profile_result()
+    result = StockAnalysisWithProfileResult(
+        company=base.company,
+        treasury=base.treasury,
+        valuation=base.valuation,
+        profile=base.profile,
+        research_valuation=base.research_valuation,
+        valuation_comparison=base.valuation_comparison,
+        valuation_snapshots=build_valuation_snapshot_collection(base),
+    )
+
+    report = format_stock_analysis_report(result, show_snapshots=True)
+
+    assert "UNIFIED VALUATION SNAPSHOTS" in report
+    assert "Model                Selected Value" in report
+    assert "AUTOMATIC_PER" in report
+    assert "RESEARCH_PER" in report
+    assert "147.42 USD" in report
+    assert "599.51 USD" in report
+    assert "COMPLETE" in report
+    assert "MEDIUM" in report
+    assert "HIGH" in report
+    assert "INTRINSIC_VALUE" in report
+    assert "Selected EPS * Applied Target PE * Treasury Multiplier" in report

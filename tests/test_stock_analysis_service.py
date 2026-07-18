@@ -20,6 +20,7 @@ from src.analysis.stock_valuation import (
     StockValuationResult,
     StockValuationStatus,
 )
+from src.analysis.valuation_snapshot import ValuationModelType
 from src.analysis.target_pe import TargetPEConfig
 from src.analysis.valuation_decision import (
     ValuationDecisionConfig,
@@ -278,6 +279,8 @@ def test_analyze_stock_uses_real_pure_valuation_calculation(
     assert result.valuation.valuation_decision.recommendation == (
         ValuationRecommendation.BUY
     )
+    assert result.valuation_snapshots is not None
+    assert result.valuation_snapshots.get(ValuationModelType.AUTOMATIC_PER) is not None
 
 
 def test_analyze_stock_rejects_missing_current_price_before_treasury_download(
@@ -485,6 +488,10 @@ def test_analyze_stock_with_profile_downloads_once_and_adds_research_valuation(
     )
     assert result.valuation_comparison is not None
     assert result.valuation_comparison.automatic_fair_value == pytest.approx(147.42)
+    assert result.valuation_snapshots is not None
+    assert result.valuation_snapshots.get(ValuationModelType.AUTOMATIC_PER) is not None
+    assert result.valuation_snapshots.get(ValuationModelType.RESEARCH_PER) is not None
+    assert result.valuation_snapshots.get(ValuationModelType.DCF_REFERENCE) is None
 
 
 def test_analyze_stock_with_profile_returns_no_research_for_unmatched_symbol(

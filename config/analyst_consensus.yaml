@@ -1,0 +1,20 @@
+defaults:
+  enabled: true
+  fair_value_method: weighted_mean_midpoint
+  mean_weight: 0.70
+  midpoint_weight: 0.30
+  apply_treasury_multiplier: false
+  low_dispersion_threshold_percent: 25.0
+  medium_dispersion_threshold_percent: 60.0
+  extreme_dispersion_threshold_percent: 100.0
+  stale_after_days: 180
+
+symbols:
+  MU:
+    rationale: "Treat the wide analyst target range conservatively."
+
+  LITE:
+    rationale: "Use analyst consensus as an independent market-expectation model."
+
+  GLW:
+    rationale: "Use analyst targets as a secondary valuation reference."

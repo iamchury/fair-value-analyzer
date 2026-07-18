@@ -15,7 +15,10 @@ _HEADER = (
 )
 
 
-def format_batch_stock_analysis_report(result: BatchStockAnalysisResult) -> str:
+def format_batch_stock_analysis_report(
+    result: BatchStockAnalysisResult,
+    show_snapshots: bool = False,
+) -> str:
     """Format a deterministic plain-text batch stock analysis report."""
     lines = [
         _LINE,
@@ -77,6 +80,21 @@ def format_batch_stock_analysis_report(result: BatchStockAnalysisResult) -> str:
         )
         for item in industry_policy_results:
             lines.append(_industry_policy_row(item))
+
+    analyst_results = [
+        item for item in result.successful_results if getattr(item, "analyst_consensus", None)
+    ]
+    if analyst_results:
+        lines.extend(["", "ANALYST CONSENSUS", _SECTION_LINE])
+        lines.append(
+            f"{'Symbol':<8} {'Mean Target':>12} {'Analyst FV':>12} "
+            f"{'Dispersion':>12} {'Quality':<12} {'Status':<12}"
+        )
+        for item in analyst_results:
+            lines.append(_analyst_row(item))
+
+    if show_snapshots:
+        _extend_snapshot_table(lines, result.successful_results)
 
     if result.failures:
         lines.extend(["", "FAILURES", _SECTION_LINE])
@@ -149,6 +167,41 @@ def _industry_policy_row(result: Any) -> str:
     )
 
 
+def _analyst_row(result: Any) -> str:
+    analyst = result.analyst_consensus
+    return (
+        f"{analyst.symbol:<8} "
+        f"{_format_number(analyst.target_mean):>12} "
+        f"{_format_number(analyst.adjusted_analyst_fair_value):>12} "
+        f"{_format_percent(analyst.dispersion_percent):>12} "
+        f"{_format_optional_text(analyst.consensus_quality):<12} "
+        f"{_format_optional_text(analyst.status):<12}"
+    )
+
+
+def _extend_snapshot_table(lines: list[str], results: tuple[Any, ...]) -> None:
+    rows = []
+    for result in results:
+        collection = getattr(result, "valuation_snapshots", None)
+        for snapshot in getattr(collection, "snapshots", ()) or ():
+            rows.append((result, snapshot))
+
+    lines.extend(["", "VALUATION SNAPSHOTS", _SECTION_LINE])
+    lines.append(
+        f"{'Symbol':<8} {'Model':<18} {'Selected Value':>16} "
+        f"{'Status':<10} {'Confidence':<12}"
+    )
+    for result, snapshot in rows:
+        currency = snapshot.currency or getattr(result.company, "currency", None)
+        lines.append(
+            f"{snapshot.symbol:<8} "
+            f"{_format_optional_text(snapshot.model_type):<18} "
+            f"{_format_currency(snapshot.selected_fair_value, currency):>16} "
+            f"{_format_optional_text(snapshot.status):<10} "
+            f"{_format_optional_text(snapshot.confidence):<12}"
+        )
+
+
 def _row(label: str, value: Any) -> str:
     return f"{label:<{_LABEL_WIDTH}}: {_format_optional_text(value)}"
 
@@ -163,6 +216,12 @@ def _format_number(value: Any) -> str:
     if value is None:
         return "N/A"
     return f"{value:.2f}"
+
+
+def _format_percent(value: Any) -> str:
+    if value is None:
+        return "N/A"
+    return f"{value:.2f}%"
 
 
 def _format_optional_text(value: Any) -> str:

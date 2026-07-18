@@ -693,3 +693,109 @@ def test_inspect_eps_rejects_industry_policy_combination() -> None:
         main_module.main(["MU", "--inspect-eps", "--industry-policies", "industry.yaml"])
 
     assert exc_info.value.code == 2
+
+
+def test_single_analyst_consensus_option_uses_existing_single_service(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    calls = []
+    result = object()
+
+    monkeypatch.setattr(
+        main_module,
+        "analyze_stock_from_config_file",
+        lambda **kwargs: calls.append(kwargs) or result,
+    )
+    monkeypatch.setattr(main_module, "format_stock_analysis_report", lambda value: "ANALYST")
+
+    assert main_module.main(["MU", "--analyst-consensus", "analyst.yaml"]) == 0
+    assert calls == [
+        {
+            "symbol": "MU",
+            "config_path": "config/valuation.yaml",
+            "analyst_consensus_path": "analyst.yaml",
+        }
+    ]
+    assert capsys.readouterr().out == "ANALYST\n"
+
+
+def test_inspect_eps_rejects_analyst_consensus_combination() -> None:
+    with pytest.raises(SystemExit) as exc_info:
+        main_module.main(["MU", "--inspect-eps", "--analyst-consensus", "analyst.yaml"])
+
+    assert exc_info.value.code == 2
+
+
+def test_single_show_snapshots_passes_explicit_formatter_flag(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    calls = []
+    result = object()
+    monkeypatch.setattr(
+        main_module,
+        "analyze_stock_from_config_file",
+        lambda **kwargs: calls.append(("analyze", kwargs)) or result,
+    )
+    monkeypatch.setattr(
+        main_module,
+        "format_stock_analysis_report",
+        lambda value, show_snapshots=False: calls.append(
+            ("format", value, show_snapshots)
+        )
+        or "SNAPSHOTS",
+    )
+
+    assert main_module.main(["MU", "--show-snapshots"]) == 0
+
+    assert calls == [
+        (
+            "analyze",
+            {"symbol": "MU", "config_path": "config/valuation.yaml"},
+        ),
+        ("format", result, True),
+    ]
+    assert capsys.readouterr().out == "SNAPSHOTS\n"
+
+
+def test_batch_show_snapshots_passes_explicit_formatter_flag(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    result = BatchStockAnalysisResult(("MU",), (object(),), ())
+    calls = []
+    monkeypatch.setattr(
+        main_module,
+        "analyze_stocks_from_config_files",
+        lambda **kwargs: calls.append(("analyze", kwargs)) or result,
+    )
+    monkeypatch.setattr(
+        main_module,
+        "format_batch_stock_analysis_report",
+        lambda value, show_snapshots=False: calls.append(
+            ("format", value, show_snapshots)
+        )
+        or "BATCH SNAPSHOTS",
+    )
+
+    assert main_module.main(["--stocks", "stocks.yaml", "--show-snapshots"]) == 0
+
+    assert calls == [
+        (
+            "analyze",
+            {
+                "stocks_path": "stocks.yaml",
+                "valuation_config_path": "config/valuation.yaml",
+            },
+        ),
+        ("format", result, True),
+    ]
+    assert capsys.readouterr().out == "BATCH SNAPSHOTS\n"
+
+
+def test_inspect_eps_rejects_show_snapshots_combination() -> None:
+    with pytest.raises(SystemExit) as exc_info:
+        main_module.main(["MU", "--inspect-eps", "--show-snapshots"])
+
+    assert exc_info.value.code == 2

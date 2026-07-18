@@ -7,6 +7,7 @@ from src.analysis.research_valuation import (
 )
 from src.analysis.eps_selection import EPSSelectionResult, EPSSelectionStatus
 from src.analysis.industry_policy import IndustryPolicyTargetPEResult
+from tests.test_text_report import analyst_result
 from src.config.eps_selection import EPSSelectionMethod
 from src.config.industry_policies import TargetPEMode, ValuationStyle as IndustryValuationStyle
 from src.config.valuation_profiles import ValuationProfile, ValuationStyle
@@ -15,6 +16,7 @@ from src.services.batch_analysis import BatchStockAnalysisResult, StockAnalysisF
 from src.services.stock_analysis import StockAnalysisWithProfileResult
 from tests.test_text_report import service_result, valuation
 from src.analysis.valuation_decision import ValuationRecommendation
+from src.analysis.valuation_snapshot import build_valuation_snapshot_collection
 
 
 def batch_result(successes=(), failures=(), requested=("LITE", "MU")):
@@ -236,3 +238,56 @@ def test_batch_report_includes_industry_policy_table_when_present() -> None:
     assert "GROWTH" in report
     assert "50.00" in report
     assert "45.00" in report
+
+
+def test_batch_report_includes_analyst_consensus_table_when_present() -> None:
+    base = service_result()
+    selected = type(base)(
+        company=base.company,
+        treasury=base.treasury,
+        valuation=base.valuation,
+        analyst_consensus=analyst_result(),
+    )
+
+    report = format_batch_stock_analysis_report(batch_result((selected,), requested=("LITE",)))
+
+    assert "ANALYST CONSENSUS" in report
+    assert "Mean Target" in report
+    assert "Analyst FV" in report
+    assert "MODERATE" in report
+    assert "COMPLETE" in report
+
+
+def test_batch_snapshot_table_is_absent_without_option() -> None:
+    base = service_result()
+    selected = type(base)(
+        company=base.company,
+        treasury=base.treasury,
+        valuation=base.valuation,
+        valuation_snapshots=build_valuation_snapshot_collection(base),
+    )
+
+    report = format_batch_stock_analysis_report(batch_result((selected,), requested=("LITE",)))
+
+    assert "VALUATION SNAPSHOTS" not in report
+
+
+def test_batch_snapshot_table_is_present_with_option() -> None:
+    base = service_result()
+    selected = type(base)(
+        company=base.company,
+        treasury=base.treasury,
+        valuation=base.valuation,
+        valuation_snapshots=build_valuation_snapshot_collection(base),
+    )
+
+    report = format_batch_stock_analysis_report(
+        batch_result((selected,), requested=("LITE",)),
+        show_snapshots=True,
+    )
+
+    assert "VALUATION SNAPSHOTS" in report
+    assert "AUTOMATIC_PER" in report
+    assert "147.42 USD" in report
+    assert "COMPLETE" in report
+    assert "MEDIUM" in report

@@ -64,6 +64,18 @@ Use explicit EPS selection and industry valuation policy:
 python -m src.main MU --eps-selection config/eps_selection.yaml --industry-policies config/industry_policies.yaml
 ```
 
+Use all current independent diagnostic model options:
+
+```bash
+python -m src.main MU --profiles config/valuation_profiles.yaml --eps-selection config/eps_selection.yaml --industry-policies config/industry_policies.yaml --analyst-consensus config/analyst_consensus.yaml
+```
+
+Show unified valuation snapshots for diagnostics:
+
+```bash
+python -m src.main MU --profiles config/valuation_profiles.yaml --eps-selection config/eps_selection.yaml --industry-policies config/industry_policies.yaml --show-snapshots
+```
+
 Use research profiles and EPS selection together:
 
 ```bash
@@ -155,3 +167,33 @@ alone do not determine the policy; symbol mappings are explicit assumptions in
 In this phase, the original Target PE engine is still calculated and reported.
 When a policy applies, fair value uses the policy Target PE, while the report
 shows both the original Target PE and the policy Target PE.
+
+## Analyst Consensus
+
+Analyst consensus is an independent valuation model enabled with
+`--analyst-consensus config/analyst_consensus.yaml`. It does not affect
+BUY/HOLD/SELL, automatic PER fair value, research fair value, EPS selection,
+Target PE, or industry policy in this phase.
+
+The model uses Yahoo analyst target mean, high, and low. The midpoint is the
+high/low midpoint, not a true median. Wide target dispersion reduces consensus
+quality, and Yahoo may not provide a reliable target publication date.
+
+Treasury adjustment is disabled by default because analyst targets may already
+include market-rate assumptions. Analyst targets are market expectations, not
+objective intrinsic value.
+
+## Unified Valuation Snapshots
+
+`ValuationSnapshot` is a common read-only result contract for valuation model
+outputs. Existing model-specific result classes remain authoritative, and
+snapshot adapters only copy already calculated values into a common shape.
+
+The current snapshot adapters cover Automatic PER, Research PER, and externally
+supplied DCF Reference values. DCF Reference is not calculated by the
+application. Model-local confidence is descriptive metadata only; it is not a
+final investment confidence score.
+
+Omitting `--show-snapshots` preserves existing output. Snapshots prepare the
+repository for future analyst, agreement, and fair-value range engines without
+changing current valuation formulas or recommendations.

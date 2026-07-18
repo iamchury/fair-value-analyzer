@@ -12,6 +12,14 @@ from src.config.eps_selection import (
     load_eps_selection_configuration,
     parse_eps_selection_configuration,
 )
+from src.config.analyst_consensus import (
+    AnalystConsensusConfiguration,
+    AnalystConsensusConfigurationError,
+    AnalystConsensusRule,
+    AnalystFairValueMethod,
+    load_analyst_consensus_configuration,
+    parse_analyst_consensus_configuration,
+)
 from src.config.industry_policies import (
     IndustryPolicyConfiguration,
     IndustryPolicyConfigurationError,
@@ -35,6 +43,10 @@ __all__ = [
     "EPSSelectionConfigurationError",
     "EPSSelectionMethod",
     "EPSSelectionRule",
+    "AnalystConsensusConfiguration",
+    "AnalystConsensusConfigurationError",
+    "AnalystConsensusRule",
+    "AnalystFairValueMethod",
     "IndustryPolicyConfiguration",
     "IndustryPolicyConfigurationError",
     "IndustryValuationPolicy",
@@ -43,10 +55,12 @@ __all__ = [
     "ValuationProfileConfigurationError",
     "ValuationStyle",
     "load_eps_selection_configuration",
+    "load_analyst_consensus_configuration",
     "load_industry_policy_configuration",
     "load_stocks_configuration",
     "load_valuation_profiles",
     "parse_eps_selection_configuration",
+    "parse_analyst_consensus_configuration",
     "parse_industry_policy_configuration",
     "parse_stocks_configuration",
     "parse_valuation_profiles",
