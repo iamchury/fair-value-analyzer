@@ -1,5 +1,5 @@
 from dataclasses import FrozenInstanceError, replace
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -51,6 +51,7 @@ from src.services.stock_analysis import (
     analyze_stock_from_config_file,
     analyze_stock_with_profile,
     analyze_stock_with_profile_from_config_files,
+    build_resilient_treasury_snapshot,
     build_stock_valuation_config,
     build_stock_valuation_inputs,
     normalize_service_symbol,
@@ -62,7 +63,7 @@ from src.yahoo.company import (
     YahooEPSEstimate,
     YahooEPSRawSnapshot,
 )
-from src.yahoo.treasury import TreasuryHistoryConfig, TreasuryYieldSnapshot
+from src.yahoo.treasury import TreasuryDataStatus, TreasuryHistoryConfig, TreasuryYieldSnapshot
 from src.yahoo.prices import HistoricalPriceRow, HistoricalPriceSeries
 
 
@@ -339,11 +340,46 @@ def test_analyze_stock_propagates_company_download_error(
         analyze_stock("LITE", configuration)
 
 
-def test_analyze_stock_propagates_treasury_download_error(
+def test_analyze_stock_uses_configured_fallback_when_treasury_download_fails(
     monkeypatch: pytest.MonkeyPatch,
     configuration: ValuationConfiguration,
     company: CompanyFundamentals,
 ) -> None:
+    stock_analysis._TREASURY_CACHE.clear()
+    monkeypatch.setattr(
+        stock_analysis,
+        "download_company_fundamentals",
+        lambda symbol: company,
+    )
+
+    def fail_treasury(config: TreasuryHistoryConfig) -> TreasuryYieldSnapshot:
+        raise RuntimeError("treasury unavailable")
+
+    monkeypatch.setattr(
+        stock_analysis,
+        "download_treasury_yield_snapshot",
+        fail_treasury,
+    )
+
+    result = analyze_stock("LITE", configuration)
+
+    assert result.treasury.data_status == TreasuryDataStatus.CONFIG_FALLBACK
+    assert result.treasury.current_yield_percent == pytest.approx(4.3)
+    assert result.valuation.status == StockValuationStatus.COMPLETE
+
+
+def test_analyze_stock_can_fail_fast_on_treasury_download_error(
+    monkeypatch: pytest.MonkeyPatch,
+    configuration: ValuationConfiguration,
+    company: CompanyFundamentals,
+) -> None:
+    fail_fast_configuration = replace(
+        configuration,
+        treasury_history=replace(
+            configuration.treasury_history,
+            fail_analysis_on_download_error=True,
+        ),
+    )
     monkeypatch.setattr(
         stock_analysis,
         "download_company_fundamentals",
@@ -360,7 +396,80 @@ def test_analyze_stock_propagates_treasury_download_error(
     )
 
     with pytest.raises(RuntimeError, match="treasury unavailable"):
-        analyze_stock("LITE", configuration)
+        analyze_stock("LITE", fail_fast_configuration)
+
+
+def test_build_resilient_treasury_snapshot_uses_recent_cache(
+    monkeypatch: pytest.MonkeyPatch,
+    configuration: ValuationConfiguration,
+    treasury: TreasuryYieldSnapshot,
+) -> None:
+    now = datetime(2026, 7, 19, 12, tzinfo=timezone.utc)
+    stock_analysis._TREASURY_CACHE.clear()
+    stock_analysis._TREASURY_CACHE["^TNX"] = replace(treasury, fetched_at=now)
+    monkeypatch.setattr(
+        stock_analysis,
+        "download_treasury_yield_snapshot",
+        lambda config: (_ for _ in ()).throw(RuntimeError("network down")),
+    )
+
+    snapshot = build_resilient_treasury_snapshot(configuration, now=now)
+
+    assert snapshot.data_status == TreasuryDataStatus.CACHED
+    assert snapshot.current_yield_percent == treasury.current_yield_percent
+    assert snapshot.used_fallback is True
+    assert "Using cached Treasury data" in snapshot.warnings[0]
+
+
+def test_build_resilient_treasury_snapshot_marks_stale_cache(
+    monkeypatch: pytest.MonkeyPatch,
+    configuration: ValuationConfiguration,
+    treasury: TreasuryYieldSnapshot,
+) -> None:
+    now = datetime(2026, 7, 19, 12, tzinfo=timezone.utc)
+    stock_analysis._TREASURY_CACHE.clear()
+    stock_analysis._TREASURY_CACHE["^TNX"] = replace(
+        treasury,
+        fetched_at=now - timedelta(hours=25),
+    )
+    monkeypatch.setattr(
+        stock_analysis,
+        "download_treasury_yield_snapshot",
+        lambda config: (_ for _ in ()).throw(RuntimeError("network down")),
+    )
+
+    snapshot = build_resilient_treasury_snapshot(configuration, now=now)
+
+    assert snapshot.data_status == TreasuryDataStatus.STALE_FALLBACK
+    assert snapshot.used_fallback is True
+
+
+def test_build_resilient_treasury_snapshot_uses_neutral_fallback_without_configured_yield(
+    monkeypatch: pytest.MonkeyPatch,
+    configuration: ValuationConfiguration,
+) -> None:
+    stock_analysis._TREASURY_CACHE.clear()
+    neutral_configuration = replace(
+        configuration,
+        treasury_history=replace(
+            configuration.treasury_history,
+            fallback_yield_percent=None,
+            allow_config_fallback=False,
+        ),
+    )
+    monkeypatch.setattr(
+        stock_analysis,
+        "download_treasury_yield_snapshot",
+        lambda config: (_ for _ in ()).throw(RuntimeError("network down")),
+    )
+
+    snapshot = build_resilient_treasury_snapshot(neutral_configuration)
+
+    assert snapshot.data_status == TreasuryDataStatus.UNAVAILABLE
+    assert snapshot.current_yield_percent == pytest.approx(
+        neutral_configuration.treasury_yield.threshold_yield_percent
+    )
+    assert snapshot.used_fallback is True
 
 
 def test_analyze_stock_propagates_nested_valuation_config_error(

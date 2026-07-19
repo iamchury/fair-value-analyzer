@@ -99,6 +99,11 @@ def test_parse_complete_valid_mapping() -> None:
     assert result.treasury_history.value_scale == "percent"
     assert result.treasury_history.short_window_observations == 20
     assert result.treasury_history.long_window_observations == 60
+    assert result.treasury_history.fallback_yield_percent == 4.3
+    assert result.treasury_history.max_cached_age_hours == 24
+    assert result.treasury_history.allow_config_fallback is True
+    assert result.treasury_history.allow_neutral_fallback is True
+    assert result.treasury_history.fail_analysis_on_download_error is False
     assert result.treasury_yield.threshold_yield_percent == 4.3
     assert result.treasury_yield.maximum_discount_percent == 25.0
     assert result.target_pe.minimum_target_pe == 15.0
@@ -125,6 +130,37 @@ def test_federal_reserve_section_is_optional_and_ignored() -> None:
     result = parse_valuation_configuration(document)
 
     assert result.treasury_history.symbol == "^TNX"
+
+
+def test_treasury_fallback_keys_are_optional_with_defaults() -> None:
+    result = parse_valuation_configuration(valid_document())
+
+    assert result.treasury_history.fallback_yield_percent == 4.3
+    assert result.treasury_history.max_cached_age_hours == 24
+    assert result.treasury_history.allow_config_fallback is True
+    assert result.treasury_history.allow_neutral_fallback is True
+    assert result.treasury_history.fail_analysis_on_download_error is False
+
+
+def test_treasury_fallback_keys_load_when_supplied() -> None:
+    document = valid_document()
+    document["macro"]["treasury_yield"].update(
+        {
+            "fallback_yield_percent": 4.9,
+            "max_cached_age_hours": 3,
+            "allow_config_fallback": False,
+            "allow_neutral_fallback": False,
+            "fail_analysis_on_download_error": True,
+        }
+    )
+
+    result = parse_valuation_configuration(document)
+
+    assert result.treasury_history.fallback_yield_percent == 4.9
+    assert result.treasury_history.max_cached_age_hours == 3
+    assert result.treasury_history.allow_config_fallback is False
+    assert result.treasury_history.allow_neutral_fallback is False
+    assert result.treasury_history.fail_analysis_on_download_error is True
 
 
 @pytest.mark.parametrize("cap", [20, 40.0, 100])
@@ -382,6 +418,24 @@ def test_unexpected_keys_raise(
             "short_window_observations",
             20.0,
             r"short_window_observations",
+        ),
+        (
+            ("macro", "treasury_yield"),
+            "fallback_yield_percent",
+            "4.3",
+            r"fallback_yield_percent",
+        ),
+        (
+            ("macro", "treasury_yield"),
+            "max_cached_age_hours",
+            24.0,
+            r"max_cached_age_hours",
+        ),
+        (
+            ("macro", "treasury_yield"),
+            "allow_config_fallback",
+            "true",
+            r"allow_config_fallback",
         ),
     ],
 )

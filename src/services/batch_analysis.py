@@ -46,7 +46,9 @@ from src.services.stock_analysis import (
     StockAnalysisServiceResult,
     analyze_stock,
     analyze_stock_with_profile,
+    build_resilient_treasury_snapshot,
 )
+from src.yahoo.treasury import TreasuryDataStatus, TreasuryYieldSnapshot
 
 
 @dataclass(frozen=True)
@@ -62,6 +64,12 @@ class BatchStockAnalysisResult:
     successful_results: tuple[StockAnalysisServiceResult, ...]
     failures: tuple[StockAnalysisFailure, ...]
     ranking_result: StockRankingResult | None = None
+    treasury_status: TreasuryDataStatus | None = None
+    treasury_yield_percent: float | None = None
+    treasury_source_date: str | None = None
+    treasury_trend: object | None = None
+    treasury_warning: str | None = None
+    treasury_used_fallback: bool = False
 
     @property
     def success_count(self) -> int:
@@ -92,6 +100,7 @@ def analyze_stocks(
     requested_symbols = _normalize_requested_symbols(symbols)
     successful_results: list[StockAnalysisServiceResult] = []
     failures: list[StockAnalysisFailure] = []
+    shared_treasury = _shared_treasury_snapshot(configuration)
 
     for symbol in requested_symbols:
         try:
@@ -104,7 +113,13 @@ def analyze_stocks(
                 and range_config is None
                 and recommendation_v2_config is None
             ):
-                successful_results.append(analyze_stock(symbol, configuration))
+                successful_results.append(
+                    _analyze_stock_with_optional_treasury(
+                        symbol,
+                        configuration,
+                        shared_treasury=shared_treasury,
+                    )
+                )
             else:
                 args = (
                     symbol,
@@ -117,9 +132,17 @@ def analyze_stocks(
                     range_config,
                 )
                 if recommendation_v2_config is None:
-                    successful_results.append(analyze_stock(*args))
+                    successful_results.append(
+                        _analyze_stock_with_optional_treasury(*args, shared_treasury=shared_treasury)
+                    )
                 else:
-                    successful_results.append(analyze_stock(*args, recommendation_v2_config))
+                    successful_results.append(
+                        _analyze_stock_with_optional_treasury(
+                            *args,
+                            recommendation_v2_config,
+                            shared_treasury=shared_treasury,
+                        )
+                    )
         except (StockAnalysisServiceError, ValueError, RuntimeError) as exc:
             failures.append(
                 StockAnalysisFailure(
@@ -133,6 +156,7 @@ def analyze_stocks(
         requested_symbols=requested_symbols,
         successful_results=tuple(successful_results),
         failures=tuple(failures),
+        **_treasury_batch_fields(shared_treasury, tuple(successful_results)),
     )
     return _attach_ranking(result, ranking_config)
 
@@ -154,6 +178,7 @@ def analyze_stocks_with_profiles(
     requested_symbols = _normalize_requested_symbols(symbols)
     successful_results = []
     failures: list[StockAnalysisFailure] = []
+    shared_treasury = _shared_treasury_snapshot(configuration)
 
     for symbol in requested_symbols:
         try:
@@ -167,7 +192,12 @@ def analyze_stocks_with_profiles(
                 and recommendation_v2_config is None
             ):
                 successful_results.append(
-                    analyze_stock_with_profile(symbol, configuration, profiles)
+                    _analyze_profile_with_optional_treasury(
+                        symbol,
+                        configuration,
+                        profiles,
+                        shared_treasury=shared_treasury,
+                    )
                 )
             else:
                 args = (
@@ -182,9 +212,17 @@ def analyze_stocks_with_profiles(
                     range_config,
                 )
                 if recommendation_v2_config is None:
-                    successful_results.append(analyze_stock_with_profile(*args))
+                    successful_results.append(
+                        _analyze_profile_with_optional_treasury(*args, shared_treasury=shared_treasury)
+                    )
                 else:
-                    successful_results.append(analyze_stock_with_profile(*args, recommendation_v2_config))
+                    successful_results.append(
+                        _analyze_profile_with_optional_treasury(
+                            *args,
+                            recommendation_v2_config,
+                            shared_treasury=shared_treasury,
+                        )
+                    )
         except (StockAnalysisServiceError, ValueError, RuntimeError) as exc:
             failures.append(
                 StockAnalysisFailure(
@@ -198,6 +236,7 @@ def analyze_stocks_with_profiles(
         requested_symbols=requested_symbols,
         successful_results=tuple(successful_results),
         failures=tuple(failures),
+        **_treasury_batch_fields(shared_treasury, tuple(successful_results)),
     )
     return _attach_ranking(result, ranking_config)
 
@@ -539,7 +578,52 @@ def _attach_ranking(
         successful_results=result.successful_results,
         failures=result.failures,
         ranking_result=rank_stocks(result.successful_results, result.failures, configuration),
+        treasury_status=result.treasury_status,
+        treasury_yield_percent=result.treasury_yield_percent,
+        treasury_source_date=result.treasury_source_date,
+        treasury_trend=result.treasury_trend,
+        treasury_warning=result.treasury_warning,
+        treasury_used_fallback=result.treasury_used_fallback,
     )
+
+
+def _shared_treasury_snapshot(configuration: object) -> TreasuryYieldSnapshot | None:
+    if not isinstance(configuration, ValuationConfiguration):
+        return None
+    return build_resilient_treasury_snapshot(configuration)
+
+
+def _analyze_stock_with_optional_treasury(*args: object, shared_treasury: TreasuryYieldSnapshot | None):
+    if shared_treasury is None:
+        return analyze_stock(*args)
+    return analyze_stock(*args, treasury_snapshot=shared_treasury)
+
+
+def _analyze_profile_with_optional_treasury(*args: object, shared_treasury: TreasuryYieldSnapshot | None):
+    if shared_treasury is None:
+        return analyze_stock_with_profile(*args)
+    return analyze_stock_with_profile(*args, treasury_snapshot=shared_treasury)
+
+
+def _treasury_batch_fields(
+    treasury: TreasuryYieldSnapshot | None,
+    successful_results: tuple[object, ...] = (),
+) -> dict[str, object]:
+    if treasury is None:
+        return {}
+    trend = None
+    for result in successful_results:
+        trend = getattr(getattr(getattr(result, "valuation", None), "macro_adjustment", None), "trend", None)
+        if trend is not None:
+            break
+    return {
+        "treasury_status": treasury.data_status,
+        "treasury_yield_percent": treasury.current_yield_percent,
+        "treasury_source_date": treasury.yield_date,
+        "treasury_trend": trend,
+        "treasury_warning": None if not treasury.warnings else treasury.warnings[0],
+        "treasury_used_fallback": treasury.used_fallback,
+    }
 
 
 def _normalize_requested_symbols(symbols: Sequence[str]) -> tuple[str, ...]:

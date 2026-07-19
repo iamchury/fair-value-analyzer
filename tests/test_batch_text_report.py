@@ -17,6 +17,7 @@ from src.config.valuation_profiles import ValuationProfile, ValuationStyle
 from src.reports.batch_text_report import format_batch_stock_analysis_report
 from src.services.batch_analysis import BatchStockAnalysisResult, StockAnalysisFailure
 from src.services.stock_analysis import StockAnalysisWithProfileResult
+from src.yahoo.treasury import TreasuryDataStatus
 from tests.test_text_report import (
     _agreement_config,
     _mu_agreement_collection,
@@ -72,6 +73,29 @@ def test_all_success_report_counts_and_columns() -> None:
     assert "176.90 USD" in report
     assert "COMPLETE" in report
     assert "FAILURES" not in report
+
+
+def test_batch_report_prints_treasury_warning_once() -> None:
+    result = BatchStockAnalysisResult(
+        requested_symbols=("A", "B", "C", "D", "E"),
+        successful_results=tuple(service_result() for _ in range(5)),
+        failures=(),
+        treasury_status=TreasuryDataStatus.CONFIG_FALLBACK,
+        treasury_yield_percent=4.3,
+        treasury_source_date="2026-07-19",
+        treasury_trend="NEUTRAL",
+        treasury_warning=(
+            "Treasury yield download failed. Using configured fallback yield of 4.30%."
+        ),
+        treasury_used_fallback=True,
+    )
+
+    report = format_batch_stock_analysis_report(result)
+
+    assert report.count("WARNING:") == 1
+    assert "Treasury Status" in report
+    assert "CONFIG_FALLBACK" in report
+    assert "Treasury Fallback Used  : YES" in report
 
 
 def test_partial_failure_report_preserves_input_order_and_details() -> None:

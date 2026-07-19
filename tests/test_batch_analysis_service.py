@@ -1,14 +1,18 @@
 from dataclasses import FrozenInstanceError
+from types import SimpleNamespace
 
 import pytest
 
 import src.services.batch_analysis as batch_analysis
+from src.analysis.macro_adjustment import TreasuryYieldConfig, YieldTrend
+from src.analysis.target_pe import TargetPEConfig
+from src.analysis.valuation_decision import ValuationDecisionConfig
 from src.config.stocks import StocksConfiguration
 from src.config.eps_selection import EPSSelectionConfiguration
 from src.config.industry_policies import IndustryPolicyConfiguration
 from src.config.agreement_engine import AgreementEngineConfiguration
 from src.config.ranking_engine import RankingEngineConfiguration, RankingWeights
-from src.config.valuation import ValuationConfigurationError
+from src.config.valuation import ValuationConfiguration, ValuationConfigurationError
 from src.services.batch_analysis import (
     BatchStockAnalysisResult,
     StockAnalysisFailure,
@@ -18,6 +22,11 @@ from src.services.batch_analysis import (
     analyze_stocks_with_profiles_from_config_files,
 )
 from src.services.stock_analysis import StockAnalysisServiceError
+from src.yahoo.treasury import (
+    TreasuryDataStatus,
+    TreasuryHistoryConfig,
+    TreasuryYieldSnapshot,
+)
 
 
 def test_analyze_stocks_is_sequential_and_preserves_order(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -149,6 +158,64 @@ def test_batch_passes_recommendation_v2_config_per_symbol(monkeypatch: pytest.Mo
     assert result.failures == (StockAnalysisFailure("MU", "RuntimeError", "failed"),)
 
 
+def test_treasury_fetch_occurs_once_per_batch(monkeypatch: pytest.MonkeyPatch) -> None:
+    configuration = _valuation_configuration()
+    treasury = _treasury_snapshot(TreasuryDataStatus.LIVE)
+    treasury_calls = []
+    analyzed_symbols = []
+
+    def fake_treasury(config):
+        treasury_calls.append(config)
+        return treasury
+
+    def fake_analyze(symbol, config, treasury_snapshot=None):
+        analyzed_symbols.append((symbol, treasury_snapshot))
+        return _analysis_result(symbol)
+
+    monkeypatch.setattr(batch_analysis, "build_resilient_treasury_snapshot", fake_treasury)
+    monkeypatch.setattr(batch_analysis, "analyze_stock", fake_analyze)
+
+    result = analyze_stocks(["A", "B", "C", "D", "E"], configuration)
+
+    assert treasury_calls == [configuration]
+    assert [symbol for symbol, _snapshot in analyzed_symbols] == ["A", "B", "C", "D", "E"]
+    assert all(snapshot is treasury for _symbol, snapshot in analyzed_symbols)
+    assert result.success_count == 5
+    assert result.failure_count == 0
+    assert result.treasury_status == TreasuryDataStatus.LIVE
+
+
+def test_five_symbols_continue_with_configured_treasury_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configuration = _valuation_configuration()
+    treasury = _treasury_snapshot(
+        TreasuryDataStatus.CONFIG_FALLBACK,
+        warning="Treasury yield download failed. Using configured fallback yield of 4.30%.",
+    )
+
+    monkeypatch.setattr(
+        batch_analysis,
+        "build_resilient_treasury_snapshot",
+        lambda config: treasury,
+    )
+    monkeypatch.setattr(
+        batch_analysis,
+        "analyze_stock",
+        lambda symbol, config, treasury_snapshot=None: _analysis_result(symbol),
+    )
+
+    result = analyze_stocks(["A", "B", "C", "D", "E"], configuration)
+
+    assert result.success_count == 5
+    assert result.failure_count == 0
+    assert result.failures == ()
+    assert result.treasury_status == TreasuryDataStatus.CONFIG_FALLBACK
+    assert result.treasury_warning == treasury.warnings[0]
+    assert result.treasury_used_fallback is True
+    assert result.treasury_trend == YieldTrend.NEUTRAL
+
+
 def test_batch_ranking_consumes_completed_results_without_reanalyzing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -222,6 +289,58 @@ def test_batch_result_dataclasses_are_immutable() -> None:
         failure.message = "changed"
     with pytest.raises(FrozenInstanceError):
         result.failures = ()
+
+
+def _valuation_configuration() -> ValuationConfiguration:
+    return ValuationConfiguration(
+        treasury_history=TreasuryHistoryConfig("^TNX", "percent", 2, 5),
+        treasury_yield=TreasuryYieldConfig(4.3, 25.0, 0.05, -10.0, 0.0, 10.0),
+        target_pe=TargetPEConfig(
+            minimum_target_pe=15.0,
+            maximum_target_pe=50.0,
+            default_target_peg=1.0,
+            maximum_eps_growth_percent=40.0,
+            low_peg_threshold=1.0,
+            normal_peg_upper_threshold=1.5,
+            high_peg_threshold=2.0,
+            low_peg_adjustment=5.0,
+            normal_peg_adjustment=0.0,
+            elevated_peg_adjustment=-2.0,
+            high_peg_adjustment=-5.0,
+            preferred_sector_adjustment=5.0,
+            ordinary_sector_adjustment=0.0,
+            high_forward_pe_premium_threshold=1.5,
+            high_forward_pe_adjustment=-2.0,
+            preferred_sectors=("Technology",),
+        ),
+        decision=ValuationDecisionConfig(20.0, 20.0),
+    )
+
+
+def _treasury_snapshot(
+    status: TreasuryDataStatus,
+    warning: str | None = None,
+) -> TreasuryYieldSnapshot:
+    return TreasuryYieldSnapshot(
+        symbol="^TNX",
+        yield_date="2026-07-19",
+        current_yield_percent=4.3,
+        sma_short_percent=4.3,
+        sma_long_percent=4.3,
+        observation_count=0,
+        data_status=status,
+        warnings=() if warning is None else (warning,),
+        used_fallback=status != TreasuryDataStatus.LIVE,
+    )
+
+
+def _analysis_result(symbol: str) -> object:
+    return SimpleNamespace(
+        valuation=SimpleNamespace(
+            symbol=symbol,
+            macro_adjustment=SimpleNamespace(trend=YieldTrend.NEUTRAL),
+        )
+    )
 
 
 def test_file_loading_entry_point_loads_once_and_delegates(monkeypatch: pytest.MonkeyPatch) -> None:

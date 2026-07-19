@@ -3,6 +3,7 @@ from types import SimpleNamespace
 import pytest
 
 from src.web import dashboard
+from src.yahoo.treasury import TreasuryDataStatus
 from tests.test_web_presentation import entry, result
 
 
@@ -30,6 +31,8 @@ class FakeStreamlit:
         self.session_state = {}
         self.errors = []
         self.exceptions = []
+        self.metrics = []
+        self.warnings = []
         self.selected_symbol = None
         self.selected_filters = {}
 
@@ -50,7 +53,8 @@ class FakeStreamlit:
     def columns(self, count):
         return [self for _ in range(count)]
 
-    def metric(self, *_args, **_kwargs):
+    def metric(self, *args, **_kwargs):
+        self.metrics.append(args)
         return None
 
     def subheader(self, *_args, **_kwargs):
@@ -68,7 +72,8 @@ class FakeStreamlit:
     def table(self, *_args, **_kwargs):
         return None
 
-    def warning(self, *_args, **_kwargs):
+    def warning(self, *args, **_kwargs):
+        self.warnings.append(args)
         return None
 
     def success(self, *_args, **_kwargs):
@@ -170,6 +175,26 @@ def test_dashboard_config_cache_resource_returns_config() -> None:
 
     assert config.ranking_config_path == "config/ranking_engine.yaml"
     assert config.recommendation_v2_config_path == "config/recommendation_v2.yaml"
+
+
+def test_macro_status_propagates_to_dashboard() -> None:
+    fake = FakeStreamlit()
+    batch = result([entry("MU", 1, 70)])
+    batch.treasury_status = TreasuryDataStatus.CONFIG_FALLBACK
+    batch.treasury_yield_percent = 4.3
+    batch.treasury_source_date = "2026-07-19"
+    batch.treasury_trend = "NEUTRAL"
+    batch.treasury_warning = (
+        "Treasury yield download failed. Using configured fallback yield of 4.30%."
+    )
+    batch.treasury_used_fallback = True
+
+    dashboard._macro_status(fake, batch)
+
+    assert ("US 10Y Yield", "4.30%") in fake.metrics
+    assert ("Data Status", "Config Fallback") in fake.metrics
+    assert ("Fallback Used", "Yes") in fake.metrics
+    assert len(fake.warnings) == 1
 
 
 def test_cli_entry_point_module_still_exposes_main() -> None:

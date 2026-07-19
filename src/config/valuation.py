@@ -106,10 +106,11 @@ def parse_valuation_configuration(
 def _build_treasury_history_config(
     section: Mapping[str, object],
 ) -> TreasuryHistoryConfig:
-    _validate_exact_keys(
+    _validate_allowed_keys(
         section,
-        _TREASURY_HISTORY_KEYS | _TREASURY_YIELD_KEYS,
-        "macro.treasury_yield",
+        required_keys=_TREASURY_REQUIRED_HISTORY_KEYS | _TREASURY_YIELD_KEYS,
+        optional_keys=_TREASURY_FALLBACK_KEYS,
+        path="macro.treasury_yield",
     )
     config = TreasuryHistoryConfig(
         symbol=_require_string(section, "symbol", "macro.treasury_yield"),
@@ -123,6 +124,36 @@ def _build_treasury_history_config(
             section,
             "long_window_observations",
             "macro.treasury_yield",
+        ),
+        fallback_yield_percent=_optional_real_number(
+            section,
+            "fallback_yield_percent",
+            "macro.treasury_yield",
+            4.30,
+        ),
+        max_cached_age_hours=_optional_integer(
+            section,
+            "max_cached_age_hours",
+            "macro.treasury_yield",
+            24,
+        ),
+        allow_config_fallback=_optional_boolean(
+            section,
+            "allow_config_fallback",
+            "macro.treasury_yield",
+            True,
+        ),
+        allow_neutral_fallback=_optional_boolean(
+            section,
+            "allow_neutral_fallback",
+            "macro.treasury_yield",
+            True,
+        ),
+        fail_analysis_on_download_error=_optional_boolean(
+            section,
+            "fail_analysis_on_download_error",
+            "macro.treasury_yield",
+            False,
         ),
     )
     _validate_domain(config, validate_history_config, "macro.treasury_yield")
@@ -316,6 +347,45 @@ def _require_integer(
     return value
 
 
+def _optional_integer(
+    mapping: Mapping[str, object],
+    key: str,
+    path: str,
+    default: int,
+) -> int:
+    if key not in mapping:
+        return default
+    return _require_integer(mapping, key, path)
+
+
+def _optional_real_number(
+    mapping: Mapping[str, object],
+    key: str,
+    path: str,
+    default: float | None,
+) -> float | None:
+    if key not in mapping:
+        return default
+    value = mapping[key]
+    if value is None:
+        return None
+    return _require_real_number(mapping, key, path)
+
+
+def _optional_boolean(
+    mapping: Mapping[str, object],
+    key: str,
+    path: str,
+    default: bool,
+) -> bool:
+    if key not in mapping:
+        return default
+    value = mapping[key]
+    if not isinstance(value, bool):
+        raise ValuationConfigurationError(f"{path}.{key} must be a boolean.")
+    return value
+
+
 def _require_string(
     mapping: Mapping[str, object],
     key: str,
@@ -373,12 +443,22 @@ def _yaml_error_types() -> tuple[type[BaseException], ...]:
     return (yaml.YAMLError,)
 
 
-_TREASURY_HISTORY_KEYS = {
+_TREASURY_REQUIRED_HISTORY_KEYS = {
     "symbol",
     "value_scale",
     "short_window_observations",
     "long_window_observations",
 }
+
+_TREASURY_FALLBACK_KEYS = {
+    "fallback_yield_percent",
+    "max_cached_age_hours",
+    "allow_config_fallback",
+    "allow_neutral_fallback",
+    "fail_analysis_on_download_error",
+}
+
+_TREASURY_HISTORY_KEYS = _TREASURY_REQUIRED_HISTORY_KEYS | _TREASURY_FALLBACK_KEYS
 
 _TREASURY_YIELD_KEYS = {
     "threshold_yield_percent",

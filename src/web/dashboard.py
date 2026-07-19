@@ -137,6 +137,7 @@ def _run_analysis(st: Any, raw_symbols: str) -> None:
 
 def _render_dashboard(st: Any, result: Any) -> None:
     _summary_metrics(st, result)
+    _macro_status(st, result)
     _failure_expander(st, result)
     table = build_ranking_dataframe(result)
     _top_opportunity(st, result)
@@ -186,6 +187,22 @@ def _top_opportunity(st: Any, result: Any) -> None:
         cols = st.columns(4)
         for index, (label, value) in enumerate(items[offset : offset + 4]):
             cols[index].metric(label, value)
+
+
+def _macro_status(st: Any, result: Any) -> None:
+    if getattr(result, "treasury_status", None) is None:
+        return
+    st.subheader("Macro Data Status")
+    cols = st.columns(5)
+    cols[0].metric("US 10Y Yield", format_percent(getattr(result, "treasury_yield_percent", None)))
+    cols[1].metric("Source Date", format_text(getattr(result, "treasury_source_date", None)))
+    cols[2].metric("Trend", format_text(getattr(result, "treasury_trend", None)))
+    cols[3].metric("Data Status", format_text(getattr(result, "treasury_status", None)))
+    fallback = "Yes" if getattr(result, "treasury_used_fallback", False) else "No"
+    cols[4].metric("Fallback Used", fallback)
+    warning = getattr(result, "treasury_warning", None)
+    if warning:
+        st.warning(warning)
 
 
 def _filters(st: Any, dataframe: pd.DataFrame) -> pd.DataFrame:

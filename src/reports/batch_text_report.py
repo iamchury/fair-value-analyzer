@@ -50,11 +50,21 @@ def format_batch_stock_analysis_report(
         _row("Requested", result.total_count),
         _row("Successful", result.success_count),
         _row("Failed", result.failure_count),
-        "",
-        "SUMMARY",
-        _SECTION_LINE,
-        _HEADER,
     ]
+    treasury_warning = getattr(result, "treasury_warning", None)
+    if treasury_warning:
+        lines.append(f"WARNING: {treasury_warning}")
+    if getattr(result, "treasury_status", None) is not None:
+        lines.extend(
+            [
+                _row("Treasury Status", getattr(result, "treasury_status", None)),
+                _row("Treasury Yield", _format_percent(getattr(result, "treasury_yield_percent", None))),
+                _row("Treasury Source Date", getattr(result, "treasury_source_date", None)),
+                _row("Treasury Trend", getattr(result, "treasury_trend", None)),
+                _row("Treasury Fallback Used", _format_yes_no(getattr(result, "treasury_used_fallback", None))),
+            ]
+        )
+    lines.extend(["", "SUMMARY", _SECTION_LINE, _HEADER])
 
     success_by_symbol = {
         item.valuation.symbol: item for item in result.successful_results

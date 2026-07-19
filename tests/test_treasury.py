@@ -5,12 +5,15 @@ import pytest
 
 from src.yahoo import treasury
 from src.yahoo.treasury import (
+    TreasuryDataStatus,
     TreasuryHistoryConfig,
     TreasuryYieldSnapshot,
     calculate_treasury_snapshot,
+    configured_fallback_treasury_snapshot,
     download_treasury_yield_snapshot,
     extract_valid_close_values,
     normalize_yield_value,
+    unavailable_treasury_snapshot,
     validate_history_config,
 )
 
@@ -222,6 +225,7 @@ def test_yahoo_history_call_arguments(
                 "period": "6mo",
                 "auto_adjust": False,
                 "repair": True,
+                "timeout": 10,
             },
         )
     ]
@@ -253,3 +257,101 @@ def test_yahoo_exception_raises_runtime_error_with_symbol(
 
     with pytest.raises(RuntimeError, match=r"\^TNX"):
         download_treasury_yield_snapshot(config)
+
+
+def test_download_retries_with_bounded_attempts(
+    monkeypatch: pytest.MonkeyPatch,
+    config: TreasuryHistoryConfig,
+) -> None:
+    FakeTicker.history_calls = []
+    monkeypatch.setattr(treasury, "sleep", lambda seconds: None)
+    monkeypatch.setattr(
+        treasury.yf,
+        "Ticker",
+        lambda symbol: FakeTicker(symbol, error=TimeoutError("timeout")),
+    )
+
+    with pytest.raises(RuntimeError, match="failed to download"):
+        download_treasury_yield_snapshot(config, attempts=2, timeout_seconds=7)
+
+    assert len(FakeTicker.history_calls) == 2
+    assert FakeTicker.history_calls[0][1]["timeout"] == 7
+
+
+def test_missing_close_column_raises_runtime_error(
+    monkeypatch: pytest.MonkeyPatch,
+    config: TreasuryHistoryConfig,
+) -> None:
+    class MissingCloseHistory:
+        empty = False
+        index = ["2024-01-01"]
+
+        def __getitem__(self, key):
+            raise KeyError(key)
+
+    monkeypatch.setattr(
+        treasury.yf,
+        "Ticker",
+        lambda symbol: FakeTicker(symbol, history=MissingCloseHistory()),
+    )
+
+    with pytest.raises(RuntimeError, match="missing Close"):
+        download_treasury_yield_snapshot(config, attempts=1)
+
+
+def test_non_finite_latest_download_value_raises(
+    monkeypatch: pytest.MonkeyPatch,
+    config: TreasuryHistoryConfig,
+) -> None:
+    history = FakeHistory(
+        [4.1, 4.2, 4.3, 4.4, nan],
+        ["2024-01-01", "2024-01-02", "2024-01-03", "2024-01-04", "2024-01-05"],
+    )
+    monkeypatch.setattr(
+        treasury.yf,
+        "Ticker",
+        lambda symbol: FakeTicker(symbol, history=history),
+    )
+
+    with pytest.raises(ValueError, match="valid observations"):
+        download_treasury_yield_snapshot(config, attempts=1)
+
+
+def test_invalid_fallback_history_configuration_raises() -> None:
+    bad = TreasuryHistoryConfig("^TNX", "percent", 2, 5, fallback_yield_percent=nan)
+
+    with pytest.raises(ValueError, match="fallback_yield_percent"):
+        validate_history_config(bad)
+
+
+def test_configured_fallback_snapshot_records_status_and_warning(
+    config: TreasuryHistoryConfig,
+) -> None:
+    snapshot = configured_fallback_treasury_snapshot(config, "network down")
+
+    assert snapshot.data_status == TreasuryDataStatus.CONFIG_FALLBACK
+    assert snapshot.current_yield_percent == pytest.approx(4.3)
+    assert snapshot.sma_short_percent == pytest.approx(4.3)
+    assert snapshot.sma_long_percent == pytest.approx(4.3)
+    assert snapshot.used_fallback is True
+    assert "configured fallback yield" in snapshot.warnings[0]
+
+
+def test_unavailable_snapshot_records_neutral_status_and_warning(
+    config: TreasuryHistoryConfig,
+) -> None:
+    config = TreasuryHistoryConfig(
+        symbol=config.symbol,
+        value_scale=config.value_scale,
+        short_window_observations=config.short_window_observations,
+        long_window_observations=config.long_window_observations,
+        fallback_yield_percent=None,
+        allow_config_fallback=False,
+    )
+
+    snapshot = unavailable_treasury_snapshot(config, 4.3, "missing")
+
+    assert snapshot.data_status == TreasuryDataStatus.UNAVAILABLE
+    assert snapshot.current_yield_percent == pytest.approx(4.3)
+    assert snapshot.used_fallback is True
+    assert "applied neutrally" in snapshot.warnings[0]

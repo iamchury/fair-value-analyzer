@@ -5,8 +5,10 @@ from src.config.eps_selection import EPSSelectionConfigurationError
 from src.config.industry_policies import IndustryPolicyConfigurationError
 from src.config.valuation import ValuationConfigurationError
 from src.config.valuation_profiles import ValuationProfileConfigurationError
+from src.reports.batch_text_report import format_batch_stock_analysis_report
 from src.services.batch_analysis import BatchStockAnalysisResult, StockAnalysisFailure
 from src.services.stock_analysis import StockAnalysisServiceError
+from src.yahoo.treasury import TreasuryDataStatus
 
 
 def test_success_uses_default_config_and_prints_once(
@@ -233,6 +235,38 @@ def test_batch_all_failure_returns_1_and_prints_report(
     assert main_module.main(["--stocks", "stocks.yaml"]) == 1
     captured = capsys.readouterr()
     assert captured.out == "FAIL REPORT\n"
+    assert captured.err == ""
+
+
+def test_cli_prints_treasury_batch_warning_once(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    result = BatchStockAnalysisResult(
+        requested_symbols=("A", "B", "C", "D", "E"),
+        successful_results=(),
+        failures=(),
+        treasury_status=TreasuryDataStatus.CONFIG_FALLBACK,
+        treasury_yield_percent=4.3,
+        treasury_source_date="2026-07-19",
+        treasury_trend="NEUTRAL",
+        treasury_warning=(
+            "Treasury yield download failed. Using configured fallback yield of 4.30%."
+        ),
+        treasury_used_fallback=True,
+    )
+    monkeypatch.setattr(main_module, "analyze_stocks_from_config_files", lambda **kwargs: result)
+    monkeypatch.setattr(
+        main_module,
+        "format_batch_stock_analysis_report",
+        format_batch_stock_analysis_report,
+    )
+
+    assert main_module.main(["--stocks", "stocks.yaml"]) == 0
+
+    captured = capsys.readouterr()
+    assert captured.out.count("WARNING:") == 1
+    assert "CONFIG_FALLBACK" in captured.out
     assert captured.err == ""
 
 

@@ -1,9 +1,19 @@
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
+from enum import Enum
 from math import isnan, isfinite
+from time import sleep
 from typing import Any
 
 import yfinance as yf
+
+
+class TreasuryDataStatus(str, Enum):
+    LIVE = "LIVE"
+    CACHED = "CACHED"
+    CONFIG_FALLBACK = "CONFIG_FALLBACK"
+    STALE_FALLBACK = "STALE_FALLBACK"
+    UNAVAILABLE = "UNAVAILABLE"
 
 
 @dataclass(frozen=True)
@@ -12,6 +22,11 @@ class TreasuryHistoryConfig:
     value_scale: str
     short_window_observations: int
     long_window_observations: int
+    fallback_yield_percent: float | None = 4.30
+    max_cached_age_hours: int = 24
+    allow_config_fallback: bool = True
+    allow_neutral_fallback: bool = True
+    fail_analysis_on_download_error: bool = False
 
 
 @dataclass(frozen=True)
@@ -22,6 +37,10 @@ class TreasuryYieldSnapshot:
     sma_short_percent: float
     sma_long_percent: float
     observation_count: int
+    data_status: TreasuryDataStatus = TreasuryDataStatus.LIVE
+    warnings: tuple[str, ...] = ()
+    used_fallback: bool = False
+    fetched_at: datetime | None = None
 
 
 def validate_history_config(config: TreasuryHistoryConfig) -> None:
@@ -31,6 +50,19 @@ def validate_history_config(config: TreasuryHistoryConfig) -> None:
     _normalize_scale(config.value_scale)
     _validate_window("short_window_observations", config.short_window_observations)
     _validate_window("long_window_observations", config.long_window_observations)
+    if config.fallback_yield_percent is not None:
+        _validate_yield_percent("fallback_yield_percent", config.fallback_yield_percent)
+    if isinstance(config.max_cached_age_hours, bool) or not isinstance(config.max_cached_age_hours, int):
+        raise ValueError("max_cached_age_hours must be an integer.")
+    if config.max_cached_age_hours < 0:
+        raise ValueError("max_cached_age_hours must be greater than or equal to 0.")
+    for name in (
+        "allow_config_fallback",
+        "allow_neutral_fallback",
+        "fail_analysis_on_download_error",
+    ):
+        if not isinstance(getattr(config, name), bool):
+            raise ValueError(f"{name} must be a boolean.")
     if config.long_window_observations <= config.short_window_observations:
         raise ValueError(
             "long_window_observations must be greater than "
@@ -114,31 +146,112 @@ def calculate_treasury_snapshot(
 def download_treasury_yield_snapshot(
     config: TreasuryHistoryConfig,
     period: str = "1y",
+    attempts: int = 2,
+    timeout_seconds: int = 10,
 ) -> TreasuryYieldSnapshot:
     """Download Treasury yield history from Yahoo and return a yield snapshot."""
     validate_history_config(config)
+    if isinstance(attempts, bool) or not isinstance(attempts, int):
+        raise ValueError("attempts must be an integer.")
+    if attempts < 1 or attempts > 3:
+        raise ValueError("attempts must be between 1 and 3.")
 
-    try:
-        history = yf.Ticker(config.symbol).history(
-            period=period,
-            auto_adjust=False,
-            repair=True,
-        )
-    except Exception as error:
+    last_error: Exception | None = None
+    for attempt in range(attempts):
+        try:
+            history = yf.Ticker(config.symbol).history(
+                period=period,
+                auto_adjust=False,
+                repair=True,
+                timeout=timeout_seconds,
+            )
+            break
+        except Exception as error:
+            last_error = error
+            if attempt + 1 < attempts:
+                sleep(0.25 * (2**attempt))
+    else:
         raise RuntimeError(
             f"{config.symbol}: failed to download Treasury yield history."
-        ) from error
+        ) from last_error
 
     if history.empty:
         raise RuntimeError(f"{config.symbol}: no Treasury yield history returned.")
 
     dates = [_format_date(value) for value in history.index]
-    raw_close_values = list(history["Close"])
-    return calculate_treasury_snapshot(
+    try:
+        raw_close_values = list(history["Close"])
+    except Exception as error:
+        raise RuntimeError(f"{config.symbol}: Treasury yield history is missing Close.") from error
+    snapshot = calculate_treasury_snapshot(
         config.symbol,
         dates,
         raw_close_values,
         config,
+    )
+    return TreasuryYieldSnapshot(
+        **{
+            **snapshot.__dict__,
+            "data_status": TreasuryDataStatus.LIVE,
+            "warnings": (),
+            "used_fallback": False,
+            "fetched_at": _utc_now(),
+        }
+    )
+
+
+def configured_fallback_treasury_snapshot(
+    config: TreasuryHistoryConfig,
+    reason: str,
+    now: datetime | None = None,
+) -> TreasuryYieldSnapshot:
+    validate_history_config(config)
+    if config.fallback_yield_percent is None or not config.allow_config_fallback:
+        raise RuntimeError("configured Treasury fallback is not available.")
+    timestamp = _utc_now() if now is None else now
+    warning = (
+        f"Treasury yield download failed. Using configured fallback yield of "
+        f"{config.fallback_yield_percent:.2f}%."
+    )
+    return TreasuryYieldSnapshot(
+        symbol=config.symbol,
+        yield_date=_format_date(timestamp),
+        current_yield_percent=float(config.fallback_yield_percent),
+        sma_short_percent=float(config.fallback_yield_percent),
+        sma_long_percent=float(config.fallback_yield_percent),
+        observation_count=0,
+        data_status=TreasuryDataStatus.CONFIG_FALLBACK,
+        warnings=(warning, reason),
+        used_fallback=True,
+        fetched_at=timestamp,
+    )
+
+
+def unavailable_treasury_snapshot(
+    config: TreasuryHistoryConfig,
+    neutral_yield_percent: float,
+    reason: str,
+    now: datetime | None = None,
+) -> TreasuryYieldSnapshot:
+    validate_history_config(config)
+    _validate_yield_percent("neutral_yield_percent", neutral_yield_percent)
+    if not config.allow_neutral_fallback:
+        raise RuntimeError("neutral Treasury fallback is disabled.")
+    timestamp = _utc_now() if now is None else now
+    return TreasuryYieldSnapshot(
+        symbol=config.symbol,
+        yield_date=_format_date(timestamp),
+        current_yield_percent=float(neutral_yield_percent),
+        sma_short_percent=float(neutral_yield_percent),
+        sma_long_percent=float(neutral_yield_percent),
+        observation_count=0,
+        data_status=TreasuryDataStatus.UNAVAILABLE,
+        warnings=(
+            "Treasury yield unavailable. Macro adjustment was applied neutrally.",
+            reason,
+        ),
+        used_fallback=True,
+        fetched_at=timestamp,
     )
 
 
@@ -166,6 +279,14 @@ def _coerce_float(name: str, value: Any) -> float:
     return number
 
 
+def _validate_yield_percent(name: str, value: float) -> None:
+    number = _coerce_float(name, value)
+    if number <= 0:
+        raise ValueError(f"{name} must be greater than 0.")
+    if number > 20:
+        raise ValueError(f"{name} must be less than or equal to 20.")
+
+
 def _is_missing(value: Any) -> bool:
     if value is None:
         return True
@@ -187,3 +308,7 @@ def _format_date(value: Any) -> str:
         return datetime.fromisoformat(text[:10]).strftime("%Y-%m-%d")
     except ValueError:
         return text[:10]
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)

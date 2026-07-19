@@ -87,7 +87,13 @@ from src.yahoo.company import (
     normalize_symbol,
 )
 from src.yahoo.prices import download_daily_price_history
-from src.yahoo.treasury import TreasuryYieldSnapshot, download_treasury_yield_snapshot
+from src.yahoo.treasury import (
+    TreasuryDataStatus,
+    TreasuryYieldSnapshot,
+    configured_fallback_treasury_snapshot,
+    download_treasury_yield_snapshot,
+    unavailable_treasury_snapshot,
+)
 
 
 class StockAnalysisServiceError(RuntimeError):
@@ -125,6 +131,9 @@ class StockAnalysisWithProfileResult:
     momentum_reference: RsiMomentumReference | None = None
     fair_value_range: FairValueRangeResult | None = None
     recommendation_v2: RecommendationV2Result | None = None
+
+
+_TREASURY_CACHE: dict[str, TreasuryYieldSnapshot] = {}
 
 
 def normalize_service_symbol(symbol: str) -> str:
@@ -187,6 +196,7 @@ def analyze_stock(
     momentum_config: MomentumReferenceConfiguration | None = None,
     range_config: FairValueRangeConfiguration | None = None,
     recommendation_v2_config: RecommendationV2Configuration | None = None,
+    treasury_snapshot: TreasuryYieldSnapshot | None = None,
 ) -> StockAnalysisServiceResult:
     normalized_symbol = normalize_service_symbol(symbol)
     eps_selection = None
@@ -202,7 +212,11 @@ def analyze_stock(
     if company.current_price is None:
         _raise_missing_current_price(normalized_symbol)
 
-    treasury = download_treasury_yield_snapshot(configuration.treasury_history)
+    treasury = (
+        build_resilient_treasury_snapshot(configuration)
+        if treasury_snapshot is None
+        else treasury_snapshot
+    )
     valuation = calculate_stock_valuation(
         build_stock_valuation_inputs(company, treasury, eps_selection),
         build_stock_valuation_config(configuration, industry_policy_config),
@@ -374,6 +388,7 @@ def analyze_stock_with_profile(
     momentum_config: MomentumReferenceConfiguration | None = None,
     range_config: FairValueRangeConfiguration | None = None,
     recommendation_v2_config: RecommendationV2Configuration | None = None,
+    treasury_snapshot: TreasuryYieldSnapshot | None = None,
 ) -> StockAnalysisWithProfileResult:
     """Analyze one stock and attach optional configured research valuation."""
     result = analyze_stock(
@@ -385,6 +400,8 @@ def analyze_stock_with_profile(
         agreement_config,
         momentum_config,
         range_config,
+        recommendation_v2_config=None,
+        treasury_snapshot=treasury_snapshot,
     )
     profile = None
     research = None
@@ -454,6 +471,59 @@ def analyze_stock_with_profile(
         momentum_reference=result.momentum_reference,
         fair_value_range=fair_value_range,
         recommendation_v2=recommendation_v2,
+    )
+
+
+def build_resilient_treasury_snapshot(
+    configuration: ValuationConfiguration,
+    now: datetime | None = None,
+) -> TreasuryYieldSnapshot:
+    history_config = configuration.treasury_history
+    try:
+        snapshot = download_treasury_yield_snapshot(history_config)
+    except (RuntimeError, ValueError) as exc:
+        reason = str(exc)
+        if history_config.fail_analysis_on_download_error:
+            raise
+        cached = _cached_treasury_snapshot(history_config, now)
+        if cached is not None:
+            return cached
+        try:
+            return configured_fallback_treasury_snapshot(history_config, reason, now)
+        except RuntimeError:
+            return unavailable_treasury_snapshot(
+                history_config,
+                configuration.treasury_yield.threshold_yield_percent,
+                reason,
+                now,
+            )
+    _TREASURY_CACHE[history_config.symbol] = snapshot
+    return snapshot
+
+
+def _cached_treasury_snapshot(
+    history_config: object,
+    now: datetime | None,
+) -> TreasuryYieldSnapshot | None:
+    symbol = getattr(history_config, "symbol")
+    cached = _TREASURY_CACHE.get(symbol)
+    if cached is None or cached.fetched_at is None:
+        return None
+    timestamp = datetime.now(timezone.utc) if now is None else now
+    age_seconds = (timestamp - cached.fetched_at).total_seconds()
+    max_age_seconds = getattr(history_config, "max_cached_age_hours", 24) * 3600
+    status = TreasuryDataStatus.CACHED if age_seconds <= max_age_seconds else TreasuryDataStatus.STALE_FALLBACK
+    warning = (
+        f"Treasury yield download failed. Using cached Treasury data from "
+        f"{cached.yield_date}."
+    )
+    return TreasuryYieldSnapshot(
+        **{
+            **cached.__dict__,
+            "data_status": status,
+            "warnings": (warning,),
+            "used_fallback": True,
+        }
     )
 
 

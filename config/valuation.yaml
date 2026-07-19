@@ -2,6 +2,11 @@ macro:
   treasury_yield:
     symbol: "^TNX"
     value_scale: "percent"
+    fallback_yield_percent: 4.30
+    max_cached_age_hours: 24
+    allow_config_fallback: true
+    allow_neutral_fallback: true
+    fail_analysis_on_download_error: false
     threshold_yield_percent: 4.3
     maximum_discount_percent: 25.0
     short_window_observations: 20
