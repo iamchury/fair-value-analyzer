@@ -5,6 +5,8 @@ from datetime import date
 from enum import Enum
 from math import isfinite
 
+import pandas as pd
+
 from src.yahoo.prices import HistoricalPriceSeries
 
 
@@ -50,6 +52,20 @@ class SoxxTimingStatus(str, Enum):
     ERROR = "ERROR"
 
 
+class EMA50Trend(str, Enum):
+    RISING = "RISING"
+    FALLING = "FALLING"
+    FLAT = "FLAT"
+    UNAVAILABLE = "UNAVAILABLE"
+
+
+class EMA50TurnEvent(str, Enum):
+    TURN_UP = "TURN_UP"
+    TURN_DOWN = "TURN_DOWN"
+    NONE = "NONE"
+    UNAVAILABLE = "UNAVAILABLE"
+
+
 SIGNAL_COLOR_KEYS = {
     SoxxTimingSignal.BUY: "BUY_LIGHT_GREEN",
     SoxxTimingSignal.STRONG_BUY: "BUY_MEDIUM_GREEN",
@@ -71,6 +87,8 @@ class SoxxTimingConfiguration:
     interval: str = "1d"
     minimum_observations: int = 60
     price_field_preference: tuple[str, ...] = ("Adj Close", "Close")
+    moving_average_type: str = "EMA"
+    exponential_adjust: bool = False
     fast_period: int = 5
     initial_period: int = 10
     strong_period: int = 15
@@ -89,11 +107,17 @@ class SoxxTimingConfiguration:
     show_chart: bool = True
     show_signal_history: bool = True
     signal_history_days: int = 120
+    chart_trading_days: int = 100
     default_chart_period: str = "6m"
     show_prior_high: bool = True
     show_drawdown: bool = True
     show_moving_averages: bool = True
     show_all_crosses: bool = True
+    buy_filter_require_below_ema50: bool = True
+    ema50_turn_enabled: bool = True
+    ema50_slope_tolerance: float = 1.0e-8
+    ema50_bridge_flat_periods: bool = True
+    show_ema50_turn_markers: bool = True
 
 
 @dataclass(frozen=True)
@@ -106,6 +130,7 @@ class SoxxMovingAverageCross:
     slow_previous: float | None
     fast_current: float | None
     slow_current: float | None
+    previous_date: date | None = None
 
 
 @dataclass(frozen=True)
@@ -117,6 +142,10 @@ class SoxxTimingDailyPoint:
     ma15: float | None
     ma20: float | None
     ma50: float | None
+    ema50_slope: float | None
+    previous_ema50_slope: float | None
+    ema50_trend: EMA50Trend
+    ema50_turn_event: EMA50TurnEvent
     prior_high_price: float | None
     prior_high_date: date | None
     drawdown_pct: float | None
@@ -133,6 +162,8 @@ class SoxxTimingDailyPoint:
 @dataclass(frozen=True)
 class SoxxTimingEvent:
     date: date
+    previous_date: date | None
+    current_date: date
     close: float
     ma5: float | None
     ma10: float | None
@@ -142,10 +173,25 @@ class SoxxTimingEvent:
     prior_high: float | None
     drawdown_pct: float | None
     crossed_average: int | None
+    fast_average: int | None
     cross_direction: SoxxCrossDirection
+    previous_ma5: float | None
+    previous_target_ma: float | None
+    current_ma5: float | None
+    current_target_ma: float | None
     signal: SoxxTimingSignal
     active_conditions: tuple[SoxxTimingSignal, ...]
     rationale: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class SoxxEMA50Turn:
+    date: date
+    ema50: float
+    ema50_slope: float
+    previous_ema50_slope: float | None
+    event: EMA50TurnEvent
+    description: str
 
 
 @dataclass(frozen=True)
@@ -154,11 +200,20 @@ class SoxxTimingResult:
     as_of_date: date | None
     current_price: float | None
     price_field: str | None
+    moving_average_type: str
+    exponential_adjust: bool
+    chart_trading_days: int
     ma5: float | None
     ma10: float | None
     ma15: float | None
     ma20: float | None
     ma50: float | None
+    ema50_slope: float | None
+    previous_ema50_slope: float | None
+    ema50_trend: EMA50Trend
+    ema50_turn_event: EMA50TurnEvent
+    latest_ema50_turn_date: date | None
+    latest_ema50_turn_event: EMA50TurnEvent
     prior_high_price: float | None
     prior_high_date: date | None
     drawdown_amount: float | None
@@ -190,11 +245,18 @@ class SoxxTimingResult:
     lookback_end: date | None
     daily_points: tuple[SoxxTimingDailyPoint, ...] = ()
     events: tuple[SoxxTimingEvent, ...] = ()
+    ema50_turn_events: tuple[SoxxEMA50Turn, ...] = ()
 
 
 def validate_soxx_timing_config(config: SoxxTimingConfiguration) -> None:
     if config.symbol != "SOXX":
         raise ValueError("symbol must be SOXX for SOXX Timing V1.")
+    if config.moving_average_type != "EMA":
+        raise ValueError("moving_average_type must be EMA for SOXX Timing V1.")
+    if not isinstance(config.exponential_adjust, bool):
+        raise ValueError("exponential_adjust must be a boolean.")
+    if config.exponential_adjust:
+        raise ValueError("exponential_adjust must be false for SOXX Timing V1.")
     periods = (
         config.fast_period,
         config.initial_period,
@@ -210,6 +272,17 @@ def validate_soxx_timing_config(config: SoxxTimingConfiguration) -> None:
         raise ValueError("confirmation_days must be at least 1.")
     if config.minimum_observations < config.long_period:
         raise ValueError("minimum_observations must be at least the long moving average period.")
+    if isinstance(config.chart_trading_days, bool) or not isinstance(config.chart_trading_days, int) or config.chart_trading_days <= 0:
+        raise ValueError("chart_trading_days must be a positive integer.")
+    if not isinstance(config.buy_filter_require_below_ema50, bool):
+        raise ValueError("buy_filter_require_below_ema50 must be a boolean.")
+    if not isinstance(config.ema50_turn_enabled, bool):
+        raise ValueError("ema50_turn_enabled must be a boolean.")
+    if not isinstance(config.ema50_bridge_flat_periods, bool):
+        raise ValueError("ema50_bridge_flat_periods must be a boolean.")
+    if not isinstance(config.show_ema50_turn_markers, bool):
+        raise ValueError("show_ema50_turn_markers must be a boolean.")
+    _finite_non_negative("ema50_slope_tolerance", config.ema50_slope_tolerance)
     if config.prior_high_lookback_trading_days < config.long_period:
         raise ValueError("prior-high lookback must be at least the long moving average period.")
     _finite_non_negative("convergence_max_spread_pct", config.convergence_max_spread_pct)
@@ -235,7 +308,7 @@ def calculate_soxx_timing(
     dates = [item[0] for item in prices]
     closes = [item[1] for item in prices]
     ma_by_period = {
-        period: _moving_average(closes, period)
+        period: _exponential_moving_average(closes, period, config.exponential_adjust)
         for period in (
             config.fast_period,
             config.initial_period,
@@ -244,26 +317,62 @@ def calculate_soxx_timing(
             config.long_period,
         )
     }
+    ema50_slopes, previous_ema50_slopes, ema50_trends, ema50_turns = _ema50_trend_series(
+        ma_by_period[config.long_period],
+        config,
+    )
     prior_highs = _prior_highs(dates, closes, config.prior_high_lookback_trading_days)
     daily: list[SoxxTimingDailyPoint] = []
     events: list[SoxxTimingEvent] = []
+    turn_events: list[SoxxEMA50Turn] = []
     previous_sell_caution = False
     for index, (point_date, close) in enumerate(prices):
-        point = _classify_point(index, dates, closes, ma_by_period, prior_highs, config)
+        point = _classify_point(
+            index,
+            dates,
+            closes,
+            ma_by_period,
+            ema50_slopes,
+            previous_ema50_slopes,
+            ema50_trends,
+            ema50_turns,
+            prior_highs,
+            config,
+        )
         daily.append(point)
-        if _is_event(point, previous_sell_caution):
-            events.append(_event_from_point(point, config))
+        event = _event_from_point(point, config, previous_sell_caution)
+        if event is not None:
+            events.append(event)
+        if point.ema50_turn_event in {EMA50TurnEvent.TURN_UP, EMA50TurnEvent.TURN_DOWN} and point.ma50 is not None and point.ema50_slope is not None:
+            turn_events.append(
+                SoxxEMA50Turn(
+                    date=point.date,
+                    ema50=point.ma50,
+                    ema50_slope=point.ema50_slope,
+                    previous_ema50_slope=point.previous_ema50_slope,
+                    event=point.ema50_turn_event,
+                    description=_ema50_turn_description(point.ema50_turn_event),
+                )
+            )
         previous_sell_caution = SoxxTimingSignal.SELL_CAUTION in point.active_conditions
 
     latest = daily[-1]
     result = _result_from_latest(config, latest, len(prices), dates[0], dates[-1], price_field, warnings)
+    latest_turn = turn_events[-1] if turn_events else None
     return SoxxTimingResult(
         **{
             **result.__dict__,
+            "latest_ema50_turn_date": None if latest_turn is None else latest_turn.date,
+            "latest_ema50_turn_event": EMA50TurnEvent.NONE if latest_turn is None else latest_turn.event,
             "daily_points": tuple(daily),
             "events": tuple(
                 event
                 for event in events
+                if (dates[-1] - event.date).days <= config.signal_history_days * 2
+            ),
+            "ema50_turn_events": tuple(
+                event
+                for event in turn_events
                 if (dates[-1] - event.date).days <= config.signal_history_days * 2
             ),
         }
@@ -275,6 +384,10 @@ def _classify_point(
     dates: list[date],
     closes: list[float],
     ma_by_period: dict[int, list[float | None]],
+    ema50_slopes: list[float | None],
+    previous_ema50_slopes: list[float | None],
+    ema50_trends: list[EMA50Trend],
+    ema50_turns: list[EMA50TurnEvent],
     prior_highs: list[tuple[float | None, date | None]],
     config: SoxxTimingConfiguration,
 ) -> SoxxTimingDailyPoint:
@@ -309,6 +422,10 @@ def _classify_point(
         ma15=values[15],
         ma20=values[20],
         ma50=values[50],
+        ema50_slope=ema50_slopes[index],
+        previous_ema50_slope=previous_ema50_slopes[index],
+        ema50_trend=ema50_trends[index],
+        ema50_turn_event=ema50_turns[index],
         prior_high_price=prior_high,
         prior_high_date=prior_high_date,
         drawdown_pct=drawdown_pct,
@@ -330,7 +447,8 @@ def _signals(
     converged: bool,
     config: SoxxTimingConfiguration,
 ) -> tuple[list[SoxxTimingSignal], SoxxTimingSignal]:
-    bullish = [period for period, cross in crosses.items() if cross.direction == SoxxCrossDirection.CROSS_ABOVE]
+    raw_bullish = [period for period, cross in crosses.items() if cross.direction == SoxxCrossDirection.CROSS_ABOVE]
+    bullish = [period for period in raw_bullish if _bullish_cross_passes_ema50_filter(period, values, config)]
     bearish = [period for period, cross in crosses.items() if cross.direction == SoxxCrossDirection.CROSS_BELOW]
     if bullish and bearish:
         return [SoxxTimingSignal.ERROR], SoxxTimingSignal.ERROR
@@ -363,6 +481,25 @@ def _buy_signals(levels: list[int]) -> list[SoxxTimingSignal]:
     if 20 in levels:
         signals.append(SoxxTimingSignal.VERY_STRONG_BUY)
     return signals
+
+
+def _bullish_cross_passes_ema50_filter(
+    period: int,
+    values: dict[int, float | None],
+    config: SoxxTimingConfiguration,
+) -> bool:
+    if not config.buy_filter_require_below_ema50:
+        return True
+    fast = values.get(config.fast_period)
+    slow = values.get(period)
+    long = values.get(config.long_period)
+    return (
+        fast is not None
+        and slow is not None
+        and long is not None
+        and fast < long
+        and slow < long
+    )
 
 
 def _sell_signals(levels: list[int]) -> list[SoxxTimingSignal]:
@@ -433,12 +570,7 @@ def _cross(
     slow_current = ma_by_period[slow_period][index]
     if None in (fast_previous, slow_previous, fast_current, slow_current):
         return _unavailable_cross(fast_period, slow_period)
-    if fast_previous <= slow_previous and fast_current > slow_current:  # type: ignore[operator]
-        direction = SoxxCrossDirection.CROSS_ABOVE
-    elif fast_previous >= slow_previous and fast_current < slow_current:  # type: ignore[operator]
-        direction = SoxxCrossDirection.CROSS_BELOW
-    else:
-        direction = SoxxCrossDirection.NONE
+    direction = detect_cross(fast_previous, slow_previous, fast_current, slow_current)
     return SoxxMovingAverageCross(
         fast_period,
         slow_period,
@@ -448,7 +580,33 @@ def _cross(
         slow_previous,
         fast_current,
         slow_current,
+        dates[index - 1],
     )
+
+
+def detect_cross(
+    previous_fast: float | None,
+    previous_slow: float | None,
+    current_fast: float | None,
+    current_slow: float | None,
+) -> SoxxCrossDirection:
+    values = (previous_fast, previous_slow, current_fast, current_slow)
+    if any(value is None or not isfinite(value) for value in values):
+        return SoxxCrossDirection.UNAVAILABLE
+    if previous_fast <= previous_slow and current_fast > current_slow:
+        return SoxxCrossDirection.CROSS_ABOVE
+    if previous_fast >= previous_slow and current_fast < current_slow:
+        return SoxxCrossDirection.CROSS_BELOW
+    return SoxxCrossDirection.NONE
+
+
+def detect_ma_cross(
+    previous_fast: float | None,
+    previous_slow: float | None,
+    current_fast: float | None,
+    current_slow: float | None,
+) -> SoxxCrossDirection:
+    return detect_cross(previous_fast, previous_slow, current_fast, current_slow)
 
 
 def _unavailable_cross(fast_period: int, slow_period: int) -> SoxxMovingAverageCross:
@@ -478,11 +636,20 @@ def _result_from_latest(
         as_of_date=latest.date,
         current_price=latest.close,
         price_field=price_field,
+        moving_average_type=config.moving_average_type,
+        exponential_adjust=config.exponential_adjust,
+        chart_trading_days=config.chart_trading_days,
         ma5=latest.ma5,
         ma10=latest.ma10,
         ma15=latest.ma15,
         ma20=latest.ma20,
         ma50=latest.ma50,
+        ema50_slope=latest.ema50_slope,
+        previous_ema50_slope=latest.previous_ema50_slope,
+        ema50_trend=latest.ema50_trend,
+        ema50_turn_event=latest.ema50_turn_event,
+        latest_ema50_turn_date=None,
+        latest_ema50_turn_event=EMA50TurnEvent.NONE,
         prior_high_price=latest.prior_high_price,
         prior_high_date=latest.prior_high_date,
         drawdown_amount=drawdown_amount,
@@ -493,7 +660,15 @@ def _result_from_latest(
         ma5_ma10_cross=crosses[10],
         ma5_ma15_cross=crosses[15],
         ma5_ma20_cross=crosses[20],
-        bullish_cross_levels=tuple(period for period, cross in crosses.items() if cross.direction == SoxxCrossDirection.CROSS_ABOVE),
+        bullish_cross_levels=tuple(
+            period
+            for period, cross in crosses.items()
+            if cross.direction == SoxxCrossDirection.CROSS_ABOVE and _bullish_cross_passes_ema50_filter(
+                period,
+                {5: latest.ma5, 10: latest.ma10, 15: latest.ma15, 20: latest.ma20, 50: latest.ma50},
+                config,
+            )
+        ),
         bearish_cross_levels=tuple(period for period, cross in crosses.items() if cross.direction == SoxxCrossDirection.CROSS_BELOW),
         short_cluster_above_ma50=short_cluster_above,
         short_cluster_below_ma50=short_cluster_below,
@@ -540,14 +715,14 @@ def _strength(signal: SoxxTimingSignal) -> SoxxSignalStrength:
 
 def _rationale(signal: SoxxTimingSignal, active: tuple[SoxxTimingSignal, ...]) -> tuple[str, ...]:
     text = {
-        SoxxTimingSignal.BUY: "MA5 crossed above MA10. This is an initial SOXX buy-timing signal.",
-        SoxxTimingSignal.STRONG_BUY: "MA5 crossed above MA15. This is a strong SOXX buy-timing signal.",
-        SoxxTimingSignal.VERY_STRONG_BUY: "MA5 crossed above MA20. This is a very strong SOXX buy-timing signal.",
-        SoxxTimingSignal.SELL: "MA5 crossed below MA10. This is an initial SOXX sell-timing signal.",
-        SoxxTimingSignal.STRONG_SELL: "MA5 crossed below MA15. This is a strong SOXX sell-timing signal.",
-        SoxxTimingSignal.VERY_STRONG_SELL: "MA5 crossed below MA20. This is a very strong SOXX sell-timing signal.",
+        SoxxTimingSignal.BUY: "EMA5 crossed above EMA10 while both EMA5 and EMA10 remained below EMA50.",
+        SoxxTimingSignal.STRONG_BUY: "EMA5 crossed above EMA15 while both EMA5 and EMA15 remained below EMA50.",
+        SoxxTimingSignal.VERY_STRONG_BUY: "EMA5 crossed above EMA20 while both EMA5 and EMA20 remained below EMA50.",
+        SoxxTimingSignal.SELL: "EMA5 crossed below EMA10. This is an initial SOXX sell-timing signal.",
+        SoxxTimingSignal.STRONG_SELL: "EMA5 crossed below EMA15. This is a strong SOXX sell-timing signal.",
+        SoxxTimingSignal.VERY_STRONG_SELL: "EMA5 crossed below EMA20. This is a very strong SOXX sell-timing signal.",
         SoxxTimingSignal.SELL_CAUTION: "SOXX is at least 10% below its rolling prior high. Risk reduction and sell discipline should be reviewed.",
-        SoxxTimingSignal.NEUTRAL: "No new SOXX moving-average crossover signal is active.",
+        SoxxTimingSignal.NEUTRAL: "No new SOXX EMA crossover signal is active.",
         SoxxTimingSignal.ERROR: "Conflicting SOXX timing signals were detected.",
         SoxxTimingSignal.INSUFFICIENT_DATA: "SOXX timing has insufficient completed daily observations.",
     }
@@ -559,21 +734,20 @@ def _rationale(signal: SoxxTimingSignal, active: tuple[SoxxTimingSignal, ...]) -
     return tuple(result)
 
 
-def _event_from_point(point: SoxxTimingDailyPoint, config: SoxxTimingConfiguration) -> SoxxTimingEvent:
-    crossed = None
-    direction = SoxxCrossDirection.NONE
-    if point.primary_signal in {SoxxTimingSignal.BUY, SoxxTimingSignal.SELL}:
-        crossed = 10
-    elif point.primary_signal in {SoxxTimingSignal.STRONG_BUY, SoxxTimingSignal.STRONG_SELL}:
-        crossed = 15
-    elif point.primary_signal in {SoxxTimingSignal.VERY_STRONG_BUY, SoxxTimingSignal.VERY_STRONG_SELL}:
-        crossed = 20
-    if point.primary_signal in {SoxxTimingSignal.BUY, SoxxTimingSignal.STRONG_BUY, SoxxTimingSignal.VERY_STRONG_BUY}:
-        direction = SoxxCrossDirection.CROSS_ABOVE
-    if point.primary_signal in {SoxxTimingSignal.SELL, SoxxTimingSignal.STRONG_SELL, SoxxTimingSignal.VERY_STRONG_SELL}:
-        direction = SoxxCrossDirection.CROSS_BELOW
+def _event_from_point(
+    point: SoxxTimingDailyPoint,
+    config: SoxxTimingConfiguration,
+    previous_sell_caution: bool,
+) -> SoxxTimingEvent | None:
+    cross = _primary_signal_cross(point)
+    if cross is None and not (
+        point.primary_signal == SoxxTimingSignal.SELL_CAUTION and not previous_sell_caution
+    ):
+        return None
     return SoxxTimingEvent(
         date=point.date,
+        previous_date=None if cross is None else cross.previous_date,
+        current_date=point.date,
         close=point.close,
         ma5=point.ma5,
         ma10=point.ma10,
@@ -582,37 +756,170 @@ def _event_from_point(point: SoxxTimingDailyPoint, config: SoxxTimingConfigurati
         ma50=point.ma50,
         prior_high=point.prior_high_price,
         drawdown_pct=point.drawdown_pct,
-        crossed_average=crossed,
-        cross_direction=direction,
+        crossed_average=None if cross is None else cross.slow_period,
+        fast_average=None if cross is None else cross.fast_period,
+        cross_direction=SoxxCrossDirection.NONE if cross is None else cross.direction,
+        previous_ma5=None if cross is None else cross.fast_previous,
+        previous_target_ma=None if cross is None else cross.slow_previous,
+        current_ma5=None if cross is None else cross.fast_current,
+        current_target_ma=None if cross is None else cross.slow_current,
         signal=point.primary_signal,
         active_conditions=point.active_conditions,
         rationale=_rationale(point.primary_signal, point.active_conditions),
     )
 
 
-def _is_event(point: SoxxTimingDailyPoint, previous_sell_caution: bool) -> bool:
-    event_signals = {
-        SoxxTimingSignal.BUY,
-        SoxxTimingSignal.STRONG_BUY,
-        SoxxTimingSignal.VERY_STRONG_BUY,
-        SoxxTimingSignal.SELL,
-        SoxxTimingSignal.STRONG_SELL,
-        SoxxTimingSignal.VERY_STRONG_SELL,
+def _primary_signal_cross(point: SoxxTimingDailyPoint) -> SoxxMovingAverageCross | None:
+    expected = {
+        SoxxTimingSignal.BUY: (10, SoxxCrossDirection.CROSS_ABOVE),
+        SoxxTimingSignal.STRONG_BUY: (15, SoxxCrossDirection.CROSS_ABOVE),
+        SoxxTimingSignal.VERY_STRONG_BUY: (20, SoxxCrossDirection.CROSS_ABOVE),
+        SoxxTimingSignal.SELL: (10, SoxxCrossDirection.CROSS_BELOW),
+        SoxxTimingSignal.STRONG_SELL: (15, SoxxCrossDirection.CROSS_BELOW),
+        SoxxTimingSignal.VERY_STRONG_SELL: (20, SoxxCrossDirection.CROSS_BELOW),
+    }.get(point.primary_signal)
+    if expected is None:
+        return None
+    period, direction = expected
+    crosses = {
+        10: point.ma5_ma10_cross,
+        15: point.ma5_ma15_cross,
+        20: point.ma5_ma20_cross,
     }
-    return point.primary_signal in event_signals or (
-        point.primary_signal == SoxxTimingSignal.SELL_CAUTION and not previous_sell_caution
+    cross = crosses[period]
+    if cross.direction != direction:
+        return None
+    event = SoxxTimingEvent(
+        date=point.date,
+        previous_date=cross.previous_date,
+        current_date=point.date,
+        close=point.close,
+        ma5=point.ma5,
+        ma10=point.ma10,
+        ma15=point.ma15,
+        ma20=point.ma20,
+        ma50=point.ma50,
+        prior_high=point.prior_high_price,
+        drawdown_pct=point.drawdown_pct,
+        crossed_average=cross.slow_period,
+        fast_average=cross.fast_period,
+        cross_direction=cross.direction,
+        previous_ma5=cross.fast_previous,
+        previous_target_ma=cross.slow_previous,
+        current_ma5=cross.fast_current,
+        current_target_ma=cross.slow_current,
+        signal=point.primary_signal,
+        active_conditions=point.active_conditions,
+        rationale=(),
     )
+    if soxx_event_invariant_errors(event):
+        return None
+    return cross
 
 
-def _moving_average(values: list[float], period: int) -> list[float | None]:
-    result: list[float | None] = []
-    for index in range(len(values)):
-        if index + 1 < period:
-            result.append(None)
+def soxx_event_invariant_errors(event: SoxxTimingEvent) -> tuple[str, ...]:
+    expected = {
+        SoxxTimingSignal.BUY: (10, SoxxCrossDirection.CROSS_ABOVE, lambda fast, slow: fast > slow),
+        SoxxTimingSignal.STRONG_BUY: (15, SoxxCrossDirection.CROSS_ABOVE, lambda fast, slow: fast > slow),
+        SoxxTimingSignal.VERY_STRONG_BUY: (20, SoxxCrossDirection.CROSS_ABOVE, lambda fast, slow: fast > slow),
+        SoxxTimingSignal.SELL: (10, SoxxCrossDirection.CROSS_BELOW, lambda fast, slow: fast < slow),
+        SoxxTimingSignal.STRONG_SELL: (15, SoxxCrossDirection.CROSS_BELOW, lambda fast, slow: fast < slow),
+        SoxxTimingSignal.VERY_STRONG_SELL: (20, SoxxCrossDirection.CROSS_BELOW, lambda fast, slow: fast < slow),
+    }.get(event.signal)
+    if expected is None:
+        return ()
+    crossed_average, direction, current_relation = expected
+    errors: list[str] = []
+    if event.fast_average != 5:
+        errors.append("fast_average must be EMA5.")
+    if event.crossed_average != crossed_average:
+        errors.append(f"crossed_average must be EMA{crossed_average}.")
+    if event.cross_direction != direction:
+        errors.append(f"cross_direction must be {direction.value}.")
+    values = (
+        event.previous_ma5,
+        event.previous_target_ma,
+        event.current_ma5,
+        event.current_target_ma,
+    )
+    if any(value is None or not isfinite(value) for value in values):
+        errors.append("event moving-average audit values must be finite.")
+        return tuple(errors)
+    if event.cross_direction == SoxxCrossDirection.CROSS_ABOVE:
+        if not event.previous_ma5 <= event.previous_target_ma:
+            errors.append("previous EMA5 must be at or below the target EMA.")
+        if event.ma50 is None or not isfinite(event.ma50):
+            errors.append("current EMA50 must be finite for bullish event validation.")
+        elif not (event.current_ma5 < event.ma50 and event.current_target_ma < event.ma50):
+            errors.append("bullish events require current EMA5 and target EMA below EMA50.")
+    if event.cross_direction == SoxxCrossDirection.CROSS_BELOW:
+        if not event.previous_ma5 >= event.previous_target_ma:
+            errors.append("previous EMA5 must be at or above the target EMA.")
+    if not current_relation(event.current_ma5, event.current_target_ma):
+        errors.append("current EMA5/target EMA relationship violates the signal invariant.")
+    if event.date != event.current_date:
+        errors.append("event date must equal the current crossover row date.")
+    return tuple(errors)
+
+
+def _exponential_moving_average(values: list[float], period: int, adjust: bool) -> list[float | None]:
+    series = pd.Series(values, dtype="float64")
+    result = series.ewm(span=period, adjust=adjust, min_periods=period).mean()
+    return [None if pd.isna(value) else float(value) for value in result]
+
+
+def _ema50_trend_series(
+    ema50_values: list[float | None],
+    config: SoxxTimingConfiguration,
+) -> tuple[list[float | None], list[float | None], list[EMA50Trend], list[EMA50TurnEvent]]:
+    slopes: list[float | None] = []
+    previous_slopes: list[float | None] = []
+    trends: list[EMA50Trend] = []
+    turns: list[EMA50TurnEvent] = []
+    last_non_flat = EMA50Trend.UNAVAILABLE
+    previous_direct = EMA50Trend.UNAVAILABLE
+    for index, current in enumerate(ema50_values):
+        previous = ema50_values[index - 1] if index > 0 else None
+        slope = None if current is None or previous is None else current - previous
+        previous_slope = slopes[index - 1] if index > 0 else None
+        trend = _ema50_trend_from_slope(slope, config.ema50_slope_tolerance)
+        turn = EMA50TurnEvent.NONE if slope is not None else EMA50TurnEvent.UNAVAILABLE
+        if config.ema50_turn_enabled and trend in {EMA50Trend.RISING, EMA50Trend.FALLING}:
+            reference = last_non_flat if config.ema50_bridge_flat_periods else previous_direct
+            if reference == EMA50Trend.RISING and trend == EMA50Trend.FALLING:
+                turn = EMA50TurnEvent.TURN_DOWN
+            elif reference == EMA50Trend.FALLING and trend == EMA50Trend.RISING:
+                turn = EMA50TurnEvent.TURN_UP
+            last_non_flat = trend
+        elif not config.ema50_turn_enabled and slope is not None:
+            turn = EMA50TurnEvent.NONE
+        if trend in {EMA50Trend.RISING, EMA50Trend.FALLING}:
+            previous_direct = trend
         else:
-            window = values[index + 1 - period : index + 1]
-            result.append(sum(window) / period)
-    return result
+            previous_direct = trend if not config.ema50_bridge_flat_periods else previous_direct
+        slopes.append(slope)
+        previous_slopes.append(previous_slope)
+        trends.append(trend)
+        turns.append(turn)
+    return slopes, previous_slopes, trends, turns
+
+
+def _ema50_trend_from_slope(slope: float | None, tolerance: float) -> EMA50Trend:
+    if slope is None or not isfinite(slope):
+        return EMA50Trend.UNAVAILABLE
+    if slope > tolerance:
+        return EMA50Trend.RISING
+    if slope < -tolerance:
+        return EMA50Trend.FALLING
+    return EMA50Trend.FLAT
+
+
+def _ema50_turn_description(event: EMA50TurnEvent) -> str:
+    if event == EMA50TurnEvent.TURN_UP:
+        return "EMA50 changed from falling to rising."
+    if event == EMA50TurnEvent.TURN_DOWN:
+        return "EMA50 changed from rising to falling."
+    return "None"
 
 
 def _prior_highs(
@@ -640,14 +947,21 @@ def _select_prices(
 ) -> tuple[list[tuple[date, float]], str, tuple[str, ...]]:
     warnings: list[str] = []
     for field in config.price_field_preference:
-        selected = []
+        rows_by_date: dict[date, float] = {}
         for row in series.rows:
             value = row.adjusted_close if field == "Adj Close" else row.close
             if value is not None and isfinite(value) and value > 0:
-                selected.append((row.date, float(value)))
-        if selected:
+                rows_by_date[row.date] = float(value)
+        if rows_by_date:
+            selected = [(row_date, rows_by_date[row_date]) for row_date in sorted(rows_by_date)]
             if len(selected) != len(series.rows):
                 warnings.append(f"{field} skipped invalid or missing rows.")
+            if len(rows_by_date) != sum(
+                1
+                for row in series.rows
+                if (row.adjusted_close if field == "Adj Close" else row.close) is not None
+            ):
+                warnings.append(f"{field} normalized duplicate trading dates.")
             return selected, field, tuple(warnings)
     return [], config.price_field_preference[0], ("No valid SOXX price rows were available.",)
 
@@ -664,11 +978,20 @@ def _insufficient_result(
         as_of_date=None,
         current_price=None,
         price_field=price_field,
+        moving_average_type=config.moving_average_type,
+        exponential_adjust=config.exponential_adjust,
+        chart_trading_days=config.chart_trading_days,
         ma5=None,
         ma10=None,
         ma15=None,
         ma20=None,
         ma50=None,
+        ema50_slope=None,
+        previous_ema50_slope=None,
+        ema50_trend=EMA50Trend.UNAVAILABLE,
+        ema50_turn_event=EMA50TurnEvent.UNAVAILABLE,
+        latest_ema50_turn_date=None,
+        latest_ema50_turn_event=EMA50TurnEvent.UNAVAILABLE,
         prior_high_price=None,
         prior_high_date=None,
         drawdown_amount=None,

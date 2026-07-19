@@ -49,7 +49,7 @@ disagreement instead of averaging it away.
 | Recommendation Engine V2 | Generates deterministic valuation-aware recommendation output with rationale. |
 | Agreement Engine | Evaluates consistency across valuation snapshots and highlights outliers. |
 | RSI50 Momentum Reference | Reports the latest RSI 50 neutral-line reference as technical momentum context. |
-| SOXX Buy/Sell Timing Engine | Tracks SOXX MA5 crossovers, drawdown, convergence, and semiconductor-cycle timing signals. |
+| SOXX Buy/Sell Timing Engine | Tracks SOXX EMA5 crossovers, drawdown, convergence, and semiconductor-cycle timing signals. |
 | Multi-stock Ranking | Ranks analyzed symbols while preserving eligibility and insufficient-data states. |
 | Streamlit Dashboard | Provides an interactive web dashboard for ranking, details, charts, and warnings. |
 | CSV / JSON Export | Exports ranking results using stable CSV and JSON formats. |
@@ -304,7 +304,7 @@ thresholds, RSI50 momentum settings, and ranking weights.
 | `config/agreement_engine.yaml` | Agreement thresholds and outlier settings. |
 | `config/fair_value_range.yaml` | Fair-value range construction and confidence weights. |
 | `config/momentum_reference.yaml` | RSI50 momentum reference lookback and calculation settings. |
-| `config/soxx_timing.yaml` | SOXX buy/sell timing settings for MA crossovers, drawdown, convergence, and display. |
+| `config/soxx_timing.yaml` | SOXX buy/sell timing settings for EMA crossovers, drawdown, convergence, and display. |
 | `config/recommendation_v2.yaml` | Recommendation V2 thresholds and decision constraints. |
 | `config/ranking_engine.yaml` | Multi-stock ranking weights, eligibility, and RSI50 display bands. |
 
@@ -335,18 +335,23 @@ reference, not intrinsic value, guaranteed support, or investor average cost.
 ### SOXX Market Timing
 
 SOXX timing is a semiconductor-cycle technical reference. It uses completed
-daily SOXX price history, MA5, MA10, MA15, MA20, MA50, rolling prior high, and
-short moving-average convergence. A crossover is an event, not a persistent
-position: MA5 must move from at-or-below to above a slower moving average for a
-buy signal, or from at-or-above to below for a sell signal.
+daily SOXX price history, EMA5, EMA10, EMA15, EMA20, EMA50, rolling prior high,
+and short EMA convergence. Exponential moving averages use the
+pandas-compatible formula `ewm(span=N, adjust=False, min_periods=N).mean()`.
+A crossover is an event, not a persistent position: EMA5 must move from
+at-or-below to above a slower EMA for a buy signal, or from at-or-above to below
+for a sell signal.
 
 Signals are graded as BUY, STRONG_BUY, VERY_STRONG_BUY, SELL, STRONG_SELL,
 VERY_STRONG_SELL, and SELL_CAUTION. SELL_CAUTION appears when SOXX is at least
 10% below its rolling prior high. A deep-drawdown recovery condition is tracked
-when SOXX is at least 30% below its prior high and MA5 crosses above MA15 while
-MA5, MA15, and MA20 remain below MA50. Convergence tracks whether MA5, MA10,
-MA15, and MA20 are tightly clustered before a sell setup. Rolling prior high
-uses prior observations only, avoiding look-ahead bias.
+when SOXX is at least 30% below its prior high and EMA5 crosses above EMA15
+while EMA5, EMA15, and EMA20 remain below EMA50. Convergence tracks whether
+EMA5, EMA10, EMA15, and EMA20 are tightly clustered before a sell setup.
+Rolling prior high uses prior observations only, avoiding look-ahead bias.
+The Streamlit chart displays the latest 100 trading days, while calculations
+use the full configured history for EMA warm-up, prior highs, and event
+detection. The previous SMA-based SOXX implementation has been replaced by EMA.
 
 SOXX timing is not intrinsic value and is not mixed into ranking scores,
 Recommendation V2, analyst consensus, or fair-value calculations. It is a

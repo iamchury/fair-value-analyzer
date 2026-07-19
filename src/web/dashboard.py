@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import altair as alt
 import pandas as pd
 import streamlit as streamlit_module
 
@@ -195,19 +196,23 @@ def _soxx_market_timing(st: Any) -> None:
     first[1].metric("Signal Strength", format_text(getattr(result, "signal_strength", None)))
     metrics = [
         ("Current SOXX Price", format_price(getattr(result, "current_price", None))),
+        ("Moving Average Type", format_text(getattr(result, "moving_average_type", None))),
         ("Prior High", format_price(getattr(result, "prior_high_price", None))),
         ("Drawdown", format_percent(getattr(result, "drawdown_pct", None), signed=True)),
         ("Signal Date", format_text(getattr(result, "as_of_date", None))),
-        ("MA5", format_number(getattr(result, "ma5", None))),
-        ("MA10", format_number(getattr(result, "ma10", None))),
-        ("MA15", format_number(getattr(result, "ma15", None))),
-        ("MA20", format_number(getattr(result, "ma20", None))),
-        ("MA50", format_number(getattr(result, "ma50", None))),
-        ("MA5 vs MA10", _cross_or_position(result, "ma5_ma10_cross", "ma5", "ma10")),
-        ("MA5 vs MA15", _cross_or_position(result, "ma5_ma15_cross", "ma5", "ma15")),
-        ("MA5 vs MA20", _cross_or_position(result, "ma5_ma20_cross", "ma5", "ma20")),
-        ("Short-MA Convergence", "Converged" if getattr(result, "short_ma_converged", False) else "Not Converged"),
-        ("MA Cluster vs MA50", _cluster_position(result)),
+        ("EMA5", format_number(getattr(result, "ma5", None))),
+        ("EMA10", format_number(getattr(result, "ma10", None))),
+        ("EMA15", format_number(getattr(result, "ma15", None))),
+        ("EMA20", format_number(getattr(result, "ma20", None))),
+        ("EMA50", format_number(getattr(result, "ma50", None))),
+        ("EMA50 Trend", format_text(getattr(result, "ema50_trend", None))),
+        ("EMA50 Daily Change", _format_signed_number(getattr(result, "ema50_slope", None))),
+        ("Latest EMA50 Turn", _latest_ema50_turn_label(result)),
+        ("EMA5 vs EMA10", _cross_or_position(result, "ma5_ma10_cross", "ma5", "ma10")),
+        ("EMA5 vs EMA15", _cross_or_position(result, "ma5_ma15_cross", "ma5", "ma15")),
+        ("EMA5 vs EMA20", _cross_or_position(result, "ma5_ma20_cross", "ma5", "ma20")),
+        ("Short EMA Convergence", "Converged" if getattr(result, "short_ma_converged", False) else "Not Converged"),
+        ("EMA Cluster vs EMA50", _cluster_position(result)),
         ("Status", format_text(getattr(result, "status", None))),
     ]
     for offset in range(0, len(metrics), 2):
@@ -220,7 +225,16 @@ def _soxx_market_timing(st: Any) -> None:
         st.caption(line)
     chart = _soxx_chart_dataframe(result)
     if not chart.empty:
-        st.line_chart(chart, x="Date", y=[column for column in chart.columns if column != "Date"], use_container_width=True)
+        st.caption(f"Price field used: {format_text(getattr(result, 'price_field', None))}")
+        st.caption("Chart displays the latest 100 trading days. Signals and indicators are calculated from the full configured history.")
+        st.altair_chart(
+            _soxx_price_chart(
+                chart,
+                _soxx_marker_dataframe(result),
+                _soxx_ema50_turn_marker_dataframe(result),
+            ),
+            use_container_width=True,
+        )
     events = _soxx_event_dataframe(result)
     if not events.empty:
         st.dataframe(events, hide_index=True, width="stretch")
@@ -236,48 +250,230 @@ def _cross_or_position(result: Any, cross_name: str, fast_name: str, slow_name: 
     if fast is None or slow is None:
         return "No New Cross"
     position = "Above" if fast > slow else "Below" if fast < slow else "Equal"
-    return f"No New Cross / MA5 {position}"
+    return f"No New Cross / EMA5 {position}"
 
 
 def _cluster_position(result: Any) -> str:
     if getattr(result, "short_cluster_above_ma50", False):
-        return "Short Cluster Above MA50"
+        return "Short Cluster Above EMA50"
     if getattr(result, "short_cluster_below_ma50", False):
-        return "Short Cluster Below MA50"
+        return "Short Cluster Below EMA50"
     return "Mixed"
 
 
 def _soxx_chart_dataframe(result: Any) -> pd.DataFrame:
     rows = []
-    for point in tuple(getattr(result, "daily_points", ()) or ())[-126:]:
+    chart_days = getattr(result, "chart_trading_days", 100) or 100
+    for point in tuple(getattr(result, "daily_points", ()) or [])[-chart_days:]:
         rows.append(
             {
-                "Date": point.date,
-                "SOXX Price": point.close,
-                "MA5": point.ma5,
-                "MA10": point.ma10,
-                "MA15": point.ma15,
-                "MA20": point.ma20,
-                "MA50": point.ma50,
-                "Prior High": point.prior_high_price,
+                "date": point.date,
+                "soxx_price": point.close,
+                "ma5": point.ma5,
+                "ma10": point.ma10,
+                "ma15": point.ma15,
+                "ma20": point.ma20,
+                "ma50": point.ma50,
+                "ema50_slope": getattr(point, "ema50_slope", None),
+                "ema50_trend": format_text(getattr(point, "ema50_trend", None)),
+                "ema50_turn_event": format_text(getattr(point, "ema50_turn_event", None)),
+                "prior_high": point.prior_high_price,
+                "drawdown_pct": point.drawdown_pct,
+                "signal": format_text(getattr(point, "primary_signal", None)),
             }
         )
     return pd.DataFrame(rows)
+
+
+def _soxx_ema50_turn_marker_dataframe(result: Any) -> pd.DataFrame:
+    visible_dates = {row["date"] for row in _soxx_chart_dataframe(result).to_dict("records")}
+    visible_by_date = {row["date"]: row for row in _soxx_chart_dataframe(result).to_dict("records")}
+    rows = []
+    for event in tuple(getattr(result, "ema50_turn_events", ()) or ()):
+        event_date = getattr(event, "date", None)
+        if visible_dates and event_date not in visible_dates:
+            continue
+        chart_row = visible_by_date.get(event_date, {})
+        rows.append(
+            {
+                "date": event_date,
+                "event": _ema50_turn_label(getattr(event, "event", None)),
+                "description": getattr(event, "description", None),
+                "ema50": getattr(event, "ema50", chart_row.get("ma50")),
+                "ema50_slope": getattr(event, "ema50_slope", None),
+                "shape": "triangle-up" if format_text(getattr(event, "event", None)) == "Turn Up" else "triangle-down",
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def _soxx_marker_dataframe(result: Any) -> pd.DataFrame:
+    visible_dates = {row["date"] for row in _soxx_chart_dataframe(result).to_dict("records")}
+    rows = []
+    for event in tuple(getattr(result, "events", ()) or ()):
+        event_date = getattr(event, "current_date", getattr(event, "date", None))
+        if visible_dates and event_date not in visible_dates:
+            continue
+        rows.append(
+            {
+                "date": event_date,
+                "signal": format_text(getattr(event, "signal", None)),
+                "cross_basis": _soxx_event_cross_basis(event),
+                "previous_date": getattr(event, "previous_date", None),
+                "previous_ma5": getattr(event, "previous_ma5", None),
+                "previous_target_ma": getattr(event, "previous_target_ma", None),
+                "current_ma5": getattr(event, "current_ma5", None),
+                "current_target_ma": getattr(event, "current_target_ma", None),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def _soxx_price_chart(chart: pd.DataFrame, markers: pd.DataFrame, turn_markers: pd.DataFrame | None = None) -> alt.Chart:
+    series = ["soxx_price", "ema5", "ema10", "ema15", "ema20", "ema50", "prior_high"]
+    display_chart = chart.rename(
+        columns={
+            "ma5": "ema5",
+            "ma10": "ema10",
+            "ma15": "ema15",
+            "ma20": "ema20",
+            "ma50": "ema50",
+        }
+    )
+    tooltip = [
+        alt.Tooltip("date:T", title="Date"),
+        alt.Tooltip("soxx_price:Q", title="SOXX Price", format=",.2f"),
+        alt.Tooltip("ema5:Q", title="EMA5", format=",.2f"),
+        alt.Tooltip("ema10:Q", title="EMA10", format=",.2f"),
+        alt.Tooltip("ema15:Q", title="EMA15", format=",.2f"),
+        alt.Tooltip("ema20:Q", title="EMA20", format=",.2f"),
+        alt.Tooltip("ema50:Q", title="EMA50", format=",.2f"),
+        alt.Tooltip("ema50_slope:Q", title="EMA50 Daily Change", format="+.2f"),
+        alt.Tooltip("ema50_trend:N", title="EMA50 Trend"),
+        alt.Tooltip("ema50_turn_event:N", title="EMA50 Turning Point"),
+        alt.Tooltip("prior_high:Q", title="Prior High", format=",.2f"),
+        alt.Tooltip("drawdown_pct:Q", title="Drawdown", format="+.2f"),
+        alt.Tooltip("signal:N", title="Signal"),
+    ]
+    base = alt.Chart(display_chart).transform_fold(series, as_=["Series", "Value"])
+    line = base.mark_line().encode(
+        x=alt.X("date:T", title="Date"),
+        y=alt.Y("Value:Q", title="Value"),
+        color=alt.Color("Series:N", title="Series"),
+        tooltip=tooltip,
+    )
+    layers: alt.Chart = line
+    if not markers.empty:
+        marker_tooltip = [
+            alt.Tooltip("date:T", title="Date"),
+            alt.Tooltip("signal:N", title="Signal"),
+            alt.Tooltip("cross_basis:N", title="Cross Basis"),
+            alt.Tooltip("previous_date:T", title="Previous Date"),
+            alt.Tooltip("previous_ma5:Q", title="Previous EMA5", format=",.2f"),
+            alt.Tooltip("previous_target_ma:Q", title="Previous Target EMA", format=",.2f"),
+            alt.Tooltip("current_ma5:Q", title="Current EMA5", format=",.2f"),
+            alt.Tooltip("current_target_ma:Q", title="Current Target EMA", format=",.2f"),
+        ]
+        rules = alt.Chart(markers).mark_rule(strokeDash=[4, 3]).encode(
+            x=alt.X("date:T", title="Date"),
+            tooltip=marker_tooltip,
+        )
+        layers = layers + rules
+    if turn_markers is not None and not turn_markers.empty:
+        turn_tooltip = [
+            alt.Tooltip("date:T", title="Date"),
+            alt.Tooltip("event:N", title="EMA50 Turning Point"),
+            alt.Tooltip("ema50:Q", title="EMA50", format=",.2f"),
+            alt.Tooltip("ema50_slope:Q", title="EMA50 Daily Change", format="+.2f"),
+            alt.Tooltip("description:N", title="Description"),
+        ]
+        turns = alt.Chart(turn_markers).mark_point(size=120, filled=True).encode(
+            x=alt.X("date:T", title="Date"),
+            y=alt.Y("ema50:Q", title="Value"),
+            shape=alt.Shape("shape:N", legend=None),
+            color=alt.value("#111827"),
+            tooltip=turn_tooltip,
+        )
+        layers = layers + turns
+    return layers
 
 
 def _soxx_event_dataframe(result: Any) -> pd.DataFrame:
+    visible_dates = {row["date"] for row in _soxx_chart_dataframe(result).to_dict("records")}
     rows = []
     for event in tuple(getattr(result, "events", ()) or ()):
+        if visible_dates and getattr(event, "current_date", getattr(event, "date", None)) not in visible_dates:
+            continue
         rows.append(
             {
                 "Date": event.date,
+                "Event Type": "DRAWDOWN_CAUTION" if getattr(event, "crossed_average", None) is None else "TRADE_SIGNAL",
                 "Signal": format_text(event.signal),
+                "Cross Basis": _soxx_event_cross_basis(event),
+                "Previous Date": format_text(getattr(event, "previous_date", None)),
+                "Current Date": format_text(getattr(event, "current_date", None)),
                 "Close": format_price(event.close),
                 "Drawdown": format_percent(event.drawdown_pct, signed=True),
-                "Cross": format_text(event.cross_direction),
+                "Previous EMA5": format_number(getattr(event, "previous_ma5", None)),
+                "Previous Target EMA": format_number(getattr(event, "previous_target_ma", None)),
+                "Current EMA5": format_number(getattr(event, "current_ma5", None)),
+                "Current Target EMA": format_number(getattr(event, "current_target_ma", None)),
             }
         )
+    for event in tuple(getattr(result, "ema50_turn_events", ()) or ()):
+        if visible_dates and getattr(event, "date", None) not in visible_dates:
+            continue
+        rows.append(
+            {
+                "Date": event.date,
+                "Event Type": "EMA50_TURN",
+                "Signal": _ema50_turn_label(getattr(event, "event", None)),
+                "Cross Basis": getattr(event, "description", None),
+                "Previous Date": "N/A",
+                "Current Date": format_text(getattr(event, "date", None)),
+                "Close": "N/A",
+                "Drawdown": "N/A",
+                "Previous EMA5": "N/A",
+                "Previous Target EMA": "N/A",
+                "Current EMA5": "N/A",
+                "Current Target EMA": format_number(getattr(event, "ema50", None)),
+            }
+        )
+    rows.sort(key=lambda row: row["Date"])
     return pd.DataFrame(rows)
+
+
+def _format_signed_number(value: Any) -> str:
+    if value is None:
+        return "N/A"
+    return f"{float(value):+.2f}"
+
+
+def _latest_ema50_turn_label(result: Any) -> str:
+    event = format_text(getattr(result, "latest_ema50_turn_event", None))
+    event_date = getattr(result, "latest_ema50_turn_date", None)
+    if event in {"None", "Unavailable", "N/A"} or event_date is None:
+        return "None"
+    return f"{format_text(event_date)} {event}"
+
+
+def _ema50_turn_label(event: Any) -> str:
+    text = format_text(event)
+    if text == "Turn Up":
+        return "EMA50 Turn Up"
+    if text == "Turn Down":
+        return "EMA50 Turn Down"
+    return text
+
+
+def _soxx_event_cross_basis(event: Any) -> str:
+    fast = getattr(event, "fast_average", None)
+    slow = getattr(event, "crossed_average", None)
+    direction = getattr(event, "cross_direction", None)
+    if fast is None or slow is None:
+        return format_text(direction)
+    direction_text = "above" if str(getattr(direction, "value", direction)) == "CROSS_ABOVE" else "below"
+    return f"EMA{fast} crossed {direction_text} EMA{slow}"
 
 
 def _dashboard_config_path(path: str) -> str:

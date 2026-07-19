@@ -38,24 +38,32 @@ def parse_soxx_timing_configuration(document: object) -> SoxxTimingConfiguration
         "moving_average_convergence",
         "prior_high",
         "thresholds",
+        "buy_filter",
+        "ema50_turn",
         "display",
     }
     _reject_unknown(root, allowed, "document")
     history = _mapping(root.get("history", {}), "history")
     moving = _mapping(root.get("moving_averages", {}), "moving_averages")
+    exponential = _mapping(moving.get("exponential", {}), "moving_averages.exponential")
     levels = _mapping(moving.get("buy_sell_levels", {}), "moving_averages.buy_sell_levels")
     cross = _mapping(root.get("cross", {}), "cross")
     convergence = _mapping(root.get("moving_average_convergence", {}), "moving_average_convergence")
     prior_high = _mapping(root.get("prior_high", {}), "prior_high")
     thresholds = _mapping(root.get("thresholds", {}), "thresholds")
+    buy_filter = _mapping(root.get("buy_filter", {}), "buy_filter")
+    ema50_turn = _mapping(root.get("ema50_turn", {}), "ema50_turn")
     display = _mapping(root.get("display", {}), "display")
     _reject_unknown(history, {"period", "interval", "minimum_observations", "price_field_preference"}, "history")
-    _reject_unknown(moving, {"fast", "buy_sell_levels", "long"}, "moving_averages")
+    _reject_unknown(moving, {"method", "exponential", "fast", "buy_sell_levels", "long"}, "moving_averages")
+    _reject_unknown(exponential, {"adjust", "min_periods_mode"}, "moving_averages.exponential")
     _reject_unknown(levels, {"initial", "strong", "very_strong"}, "moving_averages.buy_sell_levels")
     _reject_unknown(cross, {"confirmation_days", "completed_trading_day_only"}, "cross")
     _reject_unknown(convergence, {"enabled", "periods", "max_spread_pct"}, "moving_average_convergence")
     _reject_unknown(prior_high, {"lookback_trading_days", "exclude_current_day"}, "prior_high")
     _reject_unknown(thresholds, {"sell_caution_drawdown_pct", "strong_buy_drawdown_pct"}, "thresholds")
+    _reject_unknown(buy_filter, {"require_below_ema50"}, "buy_filter")
+    _reject_unknown(ema50_turn, {"enabled", "slope_tolerance", "bridge_flat_periods"}, "ema50_turn")
     _reject_unknown(
         display,
         {
@@ -63,11 +71,13 @@ def parse_soxx_timing_configuration(document: object) -> SoxxTimingConfiguration
             "show_chart",
             "show_signal_history",
             "signal_history_days",
+            "chart_trading_days",
             "default_chart_period",
             "show_prior_high",
             "show_drawdown",
             "show_moving_averages",
             "show_all_crosses",
+            "show_ema50_turn_markers",
         },
         "display",
     )
@@ -83,6 +93,8 @@ def parse_soxx_timing_configuration(document: object) -> SoxxTimingConfiguration
             "history",
             ("Adj Close", "Close"),
         ),
+        moving_average_type=_string(moving, "method", "moving_averages", "EMA"),
+        exponential_adjust=_boolean(exponential, "adjust", "moving_averages.exponential", False),
         fast_period=_integer(moving, "fast", "moving_averages", 5),
         initial_period=_integer(levels, "initial", "moving_averages.buy_sell_levels", 10),
         strong_period=_integer(levels, "strong", "moving_averages.buy_sell_levels", 15),
@@ -97,16 +109,25 @@ def parse_soxx_timing_configuration(document: object) -> SoxxTimingConfiguration
         prior_high_exclude_current_day=_boolean(prior_high, "exclude_current_day", "prior_high", True),
         sell_caution_drawdown_pct=_number(thresholds, "sell_caution_drawdown_pct", "thresholds", -10.0),
         strong_buy_drawdown_pct=_number(thresholds, "strong_buy_drawdown_pct", "thresholds", -30.0),
+        buy_filter_require_below_ema50=_boolean(buy_filter, "require_below_ema50", "buy_filter", True),
+        ema50_turn_enabled=_boolean(ema50_turn, "enabled", "ema50_turn", True),
+        ema50_slope_tolerance=_number(ema50_turn, "slope_tolerance", "ema50_turn", 1.0e-8),
+        ema50_bridge_flat_periods=_boolean(ema50_turn, "bridge_flat_periods", "ema50_turn", True),
         display_enabled=_boolean(display, "enabled", "display", True),
         show_chart=_boolean(display, "show_chart", "display", True),
         show_signal_history=_boolean(display, "show_signal_history", "display", True),
         signal_history_days=_integer(display, "signal_history_days", "display", 120),
+        chart_trading_days=_integer(display, "chart_trading_days", "display", 100),
         default_chart_period=_string(display, "default_chart_period", "display", "6m"),
         show_prior_high=_boolean(display, "show_prior_high", "display", True),
         show_drawdown=_boolean(display, "show_drawdown", "display", True),
         show_moving_averages=_boolean(display, "show_moving_averages", "display", True),
         show_all_crosses=_boolean(display, "show_all_crosses", "display", True),
+        show_ema50_turn_markers=_boolean(display, "show_ema50_turn_markers", "display", True),
     )
+    min_periods_mode = _string(exponential, "min_periods_mode", "moving_averages.exponential", "period")
+    if min_periods_mode != "period":
+        raise SoxxTimingConfigurationError("moving_averages.exponential.min_periods_mode must be period.")
     try:
         validate_soxx_timing_config(config)
     except ValueError as exc:

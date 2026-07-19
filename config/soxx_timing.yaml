@@ -9,6 +9,10 @@ history:
     - "Close"
 
 moving_averages:
+  method: "EMA"
+  exponential:
+    adjust: false
+    min_periods_mode: "period"
   fast: 5
   buy_sell_levels:
     initial: 10
@@ -37,13 +41,23 @@ thresholds:
   sell_caution_drawdown_pct: -10.0
   strong_buy_drawdown_pct: -30.0
 
+buy_filter:
+  require_below_ema50: true
+
+ema50_turn:
+  enabled: true
+  slope_tolerance: 1.0e-8
+  bridge_flat_periods: true
+
 display:
   enabled: true
   show_chart: true
   show_signal_history: true
   signal_history_days: 120
+  chart_trading_days: 100
   default_chart_period: "6m"
   show_prior_high: true
   show_drawdown: true
   show_moving_averages: true
   show_all_crosses: true
+  show_ema50_turn_markers: true

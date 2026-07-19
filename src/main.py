@@ -147,6 +147,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Append recent SOXX timing chart data to the CLI report.",
     )
+    parser.add_argument(
+        "--show-soxx-event-audit",
+        action="store_true",
+        help="Append SOXX timing event audit values to the CLI report.",
+    )
     return parser
 
 
@@ -232,9 +237,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         soxx_report = None
         if args.soxx_timing:
             soxx_result = dependencies.soxx_analyzer(args.soxx_timing_config)
+            soxx_formatter_options = {"show_chart_data": args.show_soxx_chart_data}
+            if args.show_soxx_event_audit:
+                soxx_formatter_options["show_event_audit"] = True
             soxx_report = dependencies.soxx_formatter(
                 soxx_result,
-                show_chart_data=args.show_soxx_chart_data,
+                **soxx_formatter_options,
             )
             if args.soxx_timing_only:
                 print(soxx_report)
