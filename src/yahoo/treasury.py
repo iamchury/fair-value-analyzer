@@ -60,6 +60,7 @@ class TreasuryHistoryConfig:
     allow_config_fallback: bool = True
     allow_neutral_fallback: bool = True
     fail_analysis_on_download_error: bool = False
+    source_difference_warning_pct_points: float = 0.15
 
 
 @dataclass(frozen=True)
@@ -78,6 +79,13 @@ class TreasuryYieldSnapshot:
     provider_diagnostics: tuple[str, ...] = ()
     used_fallback: bool = False
     fetched_at: datetime | None = None
+    yahoo_quote_yield: float | None = None
+    yahoo_quote_field: str | None = None
+    yahoo_short_history_yield: float | None = None
+    yahoo_short_history_date: str | None = None
+    yahoo_short_history_available: bool = False
+    yahoo_full_history_available: bool = False
+    source_difference_percentage_points: float | None = None
 
 
 def validate_history_config(config: TreasuryHistoryConfig) -> None:
@@ -115,6 +123,10 @@ def validate_history_config(config: TreasuryHistoryConfig) -> None:
     ):
         if not isinstance(getattr(config, name), bool):
             raise ValueError(f"{name} must be a boolean.")
+    _validate_non_negative_percent(
+        "source_difference_warning_pct_points",
+        config.source_difference_warning_pct_points,
+    )
 
 
 def normalize_yield_value(raw_value: float, value_scale: str) -> float:
@@ -171,7 +183,7 @@ def calculate_treasury_snapshot(
 def download_treasury_yield_snapshot(
     config: TreasuryHistoryConfig,
     period: str = "1y",
-    attempts: int = 2,
+    attempts: int = 1,
     timeout_seconds: int = 10,
 ) -> TreasuryYieldSnapshot:
     """Download Yahoo ^TNX history and return a yield snapshot."""
@@ -214,7 +226,98 @@ def download_treasury_yield_snapshot(
         status=TreasuryDataStatus.LIVE,
         fetched_at=_utc_now(),
     )
-    return snapshot
+    return TreasuryYieldSnapshot(
+        **{
+            **snapshot.__dict__,
+            "yahoo_full_history_available": True,
+        }
+    )
+
+
+def download_treasury_yield_snapshot_with_ticker_history(
+    config: TreasuryHistoryConfig,
+    period: str = "1y",
+    timeout_seconds: int = 10,
+) -> TreasuryYieldSnapshot:
+    """Try a bounded alternative Yahoo Ticker.history full-history request."""
+    validate_history_config(config)
+    ticker = yf.Ticker(config.symbol)
+    try:
+        history = ticker.history(
+            period=period,
+            interval="1d",
+            auto_adjust=False,
+            actions=False,
+            timeout=timeout_seconds,
+        )
+    except Exception as error:
+        raise RuntimeError(
+            f"{config.symbol}: failed alternative Treasury yield history request."
+        ) from error
+    snapshot = _snapshot_from_yahoo_history(
+        config=config,
+        history=history,
+        symbol=config.symbol,
+        source=TreasuryDataSource.YAHOO_TNX,
+        status=TreasuryDataStatus.LIVE,
+    )
+    return TreasuryYieldSnapshot(
+        **{
+            **snapshot.__dict__,
+            "yahoo_full_history_available": True,
+        }
+    )
+
+
+def probe_yahoo_treasury_diagnostics(
+    config: TreasuryHistoryConfig,
+    timeout_seconds: int = 10,
+) -> TreasuryYieldSnapshot:
+    """Probe Yahoo quote and short history for diagnostics only."""
+    validate_history_config(config)
+    ticker = yf.Ticker(config.symbol)
+    quote_yield, quote_field = _probe_yahoo_quote(ticker)
+    short_yield = None
+    short_date = None
+    short_available = False
+    try:
+        history = ticker.history(
+            period="5d",
+            interval="1d",
+            auto_adjust=False,
+            actions=False,
+            timeout=timeout_seconds,
+        )
+        if history.empty:
+            raise RuntimeError(f"{config.symbol}: no 5-day Treasury yield history returned.")
+        dates = [_format_date(value) for value in history.index]
+        raw_values = extract_valid_close_values(history)
+        if not raw_values:
+            raise ValueError("5-day Treasury yield history has no valid Close values.")
+        short_yield = normalize_yield_value(raw_values[-1], config.value_scale)
+        short_date = dates[-1]
+        short_available = True
+    except (RuntimeError, ValueError, OSError, KeyError):
+        short_available = False
+
+    return TreasuryYieldSnapshot(
+        symbol=config.symbol,
+        yield_date=short_date or _format_date(_utc_now()),
+        current_yield_percent=_diagnostic_yield(config, short_yield, quote_yield),
+        sma_short_percent=_diagnostic_yield(config, short_yield, quote_yield),
+        sma_long_percent=_diagnostic_yield(config, short_yield, quote_yield),
+        observation_count=0,
+        data_status=TreasuryDataStatus.PARTIAL_LIVE,
+        source=TreasuryDataSource.YAHOO_TNX,
+        source_name=_PROVIDER_LABELS[TreasuryDataSource.YAHOO_TNX],
+        yahoo_quote_yield=quote_yield,
+        yahoo_quote_field=quote_field,
+        yahoo_short_history_yield=short_yield,
+        yahoo_short_history_date=short_date,
+        yahoo_short_history_available=short_available,
+        yahoo_full_history_available=False,
+        fetched_at=_utc_now(),
+    )
 
 
 def resolve_live_treasury_yield_snapshot(
@@ -226,11 +329,25 @@ def resolve_live_treasury_yield_snapshot(
     timestamp = _utc_now() if now is None else now
     diagnostics: list[str] = []
     yahoo_failed = False
+    yahoo_probe: TreasuryYieldSnapshot | None = None
 
     for source in (_PROVIDER_NAMES[name] for name in config.providers):
         try:
             if source == TreasuryDataSource.YAHOO_TNX:
-                snapshot = download_treasury_yield_snapshot(config)
+                try:
+                    snapshot = download_treasury_yield_snapshot(config)
+                except (RuntimeError, ValueError, OSError) as primary_error:
+                    diagnostics.append(f"Yahoo ^TNX full history: unavailable")
+                    diagnostics.append(f"Yahoo ^TNX primary full history: {primary_error}")
+                    try:
+                        snapshot = download_treasury_yield_snapshot_with_ticker_history(config)
+                    except (RuntimeError, ValueError, OSError) as retry_error:
+                        diagnostics.append(f"Yahoo ^TNX full history retry: {retry_error}")
+                        yahoo_probe = probe_yahoo_treasury_diagnostics(config)
+                        diagnostics.extend(_yahoo_probe_diagnostics(yahoo_probe))
+                        raise RuntimeError(
+                            "Yahoo ^TNX complete history required for SMA20/SMA60 was unavailable."
+                        ) from retry_error
             elif source == TreasuryDataSource.FRED_DGS10:
                 snapshot = download_fred_treasury_yield_snapshot(config, now=timestamp)
             elif source == TreasuryDataSource.US_TREASURY:
@@ -250,12 +367,50 @@ def resolve_live_treasury_yield_snapshot(
                 f"Yahoo ^TNX was unavailable. Treasury data was loaded from "
                 f"{_PROVIDER_LABELS[source]}.",
             )
+            if yahoo_probe and _has_yahoo_probe_value(yahoo_probe):
+                messages = (
+                    "Yahoo ^TNX short history is available, but complete history "
+                    "required for SMA20/SMA60 was unavailable. "
+                    f"{_PROVIDER_LABELS[source]} is used for the valuation yield and trend.",
+                )
+        source_difference = _source_difference(yahoo_probe, snapshot)
+        warnings = snapshot.warnings
+        if (
+            source_difference is not None
+            and abs(source_difference) > config.source_difference_warning_pct_points
+        ):
+            warnings = (
+                *warnings,
+                "Yahoo ^TNX latest yield differs materially from the resolved Treasury source.",
+            )
         return TreasuryYieldSnapshot(
             **{
                 **snapshot.__dict__,
+                "warnings": warnings,
                 "messages": messages,
-                "provider_diagnostics": tuple([*diagnostics, f"{_PROVIDER_LABELS[source]}: success"]),
+                "provider_diagnostics": tuple(
+                    [
+                        *diagnostics,
+                        f"{_PROVIDER_LABELS[source]}: success",
+                        *_resolved_source_diagnostics(snapshot, source_difference),
+                    ]
+                ),
                 "used_fallback": False,
+                "yahoo_quote_yield": None
+                if yahoo_probe is None
+                else yahoo_probe.yahoo_quote_yield,
+                "yahoo_quote_field": None if yahoo_probe is None else yahoo_probe.yahoo_quote_field,
+                "yahoo_short_history_yield": None
+                if yahoo_probe is None
+                else yahoo_probe.yahoo_short_history_yield,
+                "yahoo_short_history_date": None
+                if yahoo_probe is None
+                else yahoo_probe.yahoo_short_history_date,
+                "yahoo_short_history_available": False
+                if yahoo_probe is None
+                else yahoo_probe.yahoo_short_history_available,
+                "yahoo_full_history_available": source == TreasuryDataSource.YAHOO_TNX,
+                "source_difference_percentage_points": source_difference,
             }
         )
 
@@ -463,6 +618,113 @@ def _snapshot_from_observations(
     )
 
 
+def _snapshot_from_yahoo_history(
+    config: TreasuryHistoryConfig,
+    history: Any,
+    symbol: str,
+    source: TreasuryDataSource,
+    status: TreasuryDataStatus,
+) -> TreasuryYieldSnapshot:
+    if history.empty:
+        raise RuntimeError(f"{symbol}: no Treasury yield history returned.")
+    dates = [_format_date(value) for value in history.index]
+    try:
+        raw_close_values = list(history["Close"])
+    except Exception as error:
+        raise RuntimeError(f"{symbol}: Treasury yield history is missing Close.") from error
+    return _snapshot_from_observations(
+        symbol=symbol,
+        dates=dates,
+        raw_values=raw_close_values,
+        config=config,
+        source=source,
+        status=status,
+        fetched_at=_utc_now(),
+    )
+
+
+def _probe_yahoo_quote(ticker: Any) -> tuple[float | None, str | None]:
+    try:
+        info = ticker.get_info()
+    except AttributeError:
+        info = getattr(ticker, "info", {})
+    except Exception:
+        info = {}
+    if not isinstance(info, dict):
+        return None, None
+    for field in ("regularMarketPrice", "previousClose"):
+        raw_value = info.get(field)
+        try:
+            value = normalize_yield_value(raw_value, "percent")
+        except ValueError:
+            continue
+        return value, field
+    return None, None
+
+
+def _yahoo_probe_diagnostics(probe: TreasuryYieldSnapshot) -> tuple[str, ...]:
+    diagnostics = [
+        "Yahoo ^TNX 5-day history: "
+        + ("success" if probe.yahoo_short_history_available else "unavailable")
+    ]
+    if probe.yahoo_short_history_yield is not None:
+        diagnostics.append(
+            f"Yahoo latest observation: {probe.yahoo_short_history_yield:.3f}% "
+            f"on {probe.yahoo_short_history_date}"
+        )
+    if probe.yahoo_quote_yield is not None:
+        diagnostics.append(
+            f"Yahoo current quote: {probe.yahoo_quote_yield:.3f}% "
+            f"({probe.yahoo_quote_field})"
+        )
+    return tuple(diagnostics)
+
+
+def _source_difference(
+    yahoo_probe: TreasuryYieldSnapshot | None,
+    resolved_snapshot: TreasuryYieldSnapshot,
+) -> float | None:
+    if yahoo_probe is None:
+        return None
+    yahoo_yield = yahoo_probe.yahoo_short_history_yield
+    if yahoo_yield is None:
+        yahoo_yield = yahoo_probe.yahoo_quote_yield
+    if yahoo_yield is None:
+        return None
+    return yahoo_yield - resolved_snapshot.current_yield_percent
+
+
+def _has_yahoo_probe_value(probe: TreasuryYieldSnapshot) -> bool:
+    return probe.yahoo_short_history_available or probe.yahoo_quote_yield is not None
+
+
+def _diagnostic_yield(
+    config: TreasuryHistoryConfig,
+    short_yield: float | None,
+    quote_yield: float | None,
+) -> float:
+    if short_yield is not None:
+        return short_yield
+    if quote_yield is not None:
+        return quote_yield
+    if config.fallback_yield_percent is not None:
+        return config.fallback_yield_percent
+    return 4.3
+
+
+def _resolved_source_diagnostics(
+    snapshot: TreasuryYieldSnapshot,
+    source_difference: float | None,
+) -> tuple[str, ...]:
+    diagnostics = [
+        f"Resolved source: {snapshot.source_name}",
+        f"Resolved yield: {snapshot.current_yield_percent:.3f}%",
+    ]
+    if source_difference is not None:
+        diagnostics.append(f"Yahoo/resolved difference: {source_difference:+.3f} percentage points")
+    return tuple(diagnostics)
+
+
 def _read_url_text(url: str, timeout_seconds: int) -> str:
     with urlopen(url, timeout=timeout_seconds) as response:
         return response.read().decode("utf-8")
@@ -542,6 +804,12 @@ def _validate_yield_percent(name: str, value: float) -> None:
         raise ValueError(f"{name} must be greater than 0.")
     if number > 20:
         raise ValueError(f"{name} must be less than or equal to 20.")
+
+
+def _validate_non_negative_percent(name: str, value: float) -> None:
+    number = _coerce_float(name, value)
+    if number < 0:
+        raise ValueError(f"{name} must be greater than or equal to 0.")
 
 
 def _is_missing(value: Any) -> bool:

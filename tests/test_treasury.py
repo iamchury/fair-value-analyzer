@@ -14,9 +14,11 @@ from src.yahoo.treasury import (
     configured_fallback_treasury_snapshot,
     download_fred_treasury_yield_snapshot,
     download_treasury_yield_snapshot,
+    download_treasury_yield_snapshot_with_ticker_history,
     download_us_treasury_yield_snapshot,
     extract_valid_close_values,
     normalize_yield_value,
+    probe_yahoo_treasury_diagnostics,
     resolve_live_treasury_yield_snapshot,
     unavailable_treasury_snapshot,
     validate_history_config,
@@ -48,10 +50,14 @@ class FakeHistory:
 class FakeTicker:
     history_calls = []
 
-    def __init__(self, symbol, history=None, error=None):
+    def __init__(self, symbol, history=None, error=None, info=None):
         self.symbol = symbol
         self._history = history
         self._error = error
+        self.info = info or {}
+
+    def get_info(self):
+        return self.info
 
     def history(self, **kwargs):
         self.history_calls.append((self.symbol, kwargs))
@@ -236,6 +242,40 @@ def test_yahoo_history_call_arguments(
     ]
 
 
+def test_yahoo_ticker_full_history_retry_succeeds(
+    monkeypatch: pytest.MonkeyPatch,
+    config: TreasuryHistoryConfig,
+) -> None:
+    history = FakeHistory(
+        [4.1, 4.2, 4.3, 4.4, 4.5],
+        ["2024-01-01", "2024-01-02", "2024-01-03", "2024-01-04", "2024-01-05"],
+    )
+    FakeTicker.history_calls = []
+    monkeypatch.setattr(
+        treasury.yf,
+        "Ticker",
+        lambda symbol: FakeTicker(symbol, history=history),
+    )
+
+    snapshot = download_treasury_yield_snapshot_with_ticker_history(config)
+
+    assert snapshot.source == TreasuryDataSource.YAHOO_TNX
+    assert snapshot.yahoo_full_history_available is True
+    assert snapshot.current_yield_percent == pytest.approx(4.5)
+    assert FakeTicker.history_calls == [
+        (
+            "^TNX",
+            {
+                "period": "1y",
+                "interval": "1d",
+                "auto_adjust": False,
+                "actions": False,
+                "timeout": 10,
+            },
+        )
+    ]
+
+
 def test_empty_yahoo_history_raises_runtime_error(
     monkeypatch: pytest.MonkeyPatch,
     config: TreasuryHistoryConfig,
@@ -320,6 +360,75 @@ def test_non_finite_latest_download_value_raises(
 
     with pytest.raises(ValueError, match="valid observations"):
         download_treasury_yield_snapshot(config, attempts=1)
+
+
+def test_yahoo_short_history_probe_succeeds_without_sma_use(
+    monkeypatch: pytest.MonkeyPatch,
+    config: TreasuryHistoryConfig,
+) -> None:
+    history = FakeHistory(
+        [4.539, 4.541],
+        ["2026-07-16", "2026-07-17"],
+    )
+    monkeypatch.setattr(
+        treasury.yf,
+        "Ticker",
+        lambda symbol: FakeTicker(
+            symbol,
+            history=history,
+            info={"regularMarketPrice": 4.541},
+        ),
+    )
+
+    snapshot = probe_yahoo_treasury_diagnostics(config)
+
+    assert snapshot.data_status == TreasuryDataStatus.PARTIAL_LIVE
+    assert snapshot.yahoo_short_history_available is True
+    assert snapshot.yahoo_short_history_yield == pytest.approx(4.541)
+    assert snapshot.yahoo_short_history_date == "2026-07-17"
+    assert snapshot.yahoo_quote_yield == pytest.approx(4.541)
+    assert snapshot.yahoo_quote_field == "regularMarketPrice"
+
+
+def test_yahoo_quote_uses_previous_close_when_market_price_missing(
+    monkeypatch: pytest.MonkeyPatch,
+    config: TreasuryHistoryConfig,
+) -> None:
+    monkeypatch.setattr(
+        treasury.yf,
+        "Ticker",
+        lambda symbol: FakeTicker(
+            symbol,
+            history=FakeHistory([], [], empty=True),
+            info={"previousClose": 4.54},
+        ),
+    )
+
+    snapshot = probe_yahoo_treasury_diagnostics(config)
+
+    assert snapshot.yahoo_quote_yield == pytest.approx(4.54)
+    assert snapshot.yahoo_quote_field == "previousClose"
+    assert snapshot.yahoo_short_history_available is False
+
+
+def test_yahoo_quote_rejects_invalid_values_before_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+    config: TreasuryHistoryConfig,
+) -> None:
+    monkeypatch.setattr(
+        treasury.yf,
+        "Ticker",
+        lambda symbol: FakeTicker(
+            symbol,
+            history=FakeHistory([], [], empty=True),
+            info={"regularMarketPrice": nan, "previousClose": 4.54},
+        ),
+    )
+
+    snapshot = probe_yahoo_treasury_diagnostics(config)
+
+    assert snapshot.yahoo_quote_yield == pytest.approx(4.54)
+    assert snapshot.yahoo_quote_field == "previousClose"
 
 
 def test_invalid_fallback_history_configuration_raises() -> None:
@@ -422,6 +531,26 @@ def test_yahoo_failure_followed_by_fred_success(
     )
     monkeypatch.setattr(
         treasury,
+        "download_treasury_yield_snapshot_with_ticker_history",
+        lambda loaded_config: (_ for _ in ()).throw(RuntimeError("full retry failed")),
+    )
+    monkeypatch.setattr(
+        treasury,
+        "probe_yahoo_treasury_diagnostics",
+        lambda loaded_config: TreasuryYieldSnapshot(
+            "^TNX",
+            "2026-07-17",
+            4.54,
+            4.54,
+            4.54,
+            0,
+            data_status=TreasuryDataStatus.PARTIAL_LIVE,
+            yahoo_short_history_available=False,
+            yahoo_full_history_available=False,
+        ),
+    )
+    monkeypatch.setattr(
+        treasury,
         "download_fred_treasury_yield_snapshot",
         lambda loaded_config, now=None: calls.append("fred") or fred,
     )
@@ -436,7 +565,128 @@ def test_yahoo_failure_followed_by_fred_success(
     assert snapshot.data_status == TreasuryDataStatus.LIVE
     assert snapshot.used_fallback is False
     assert "loaded from FRED DGS10" in snapshot.messages[0]
-    assert "Yahoo ^TNX: empty DataFrame" in snapshot.provider_diagnostics
+    assert "Yahoo ^TNX primary full history: empty DataFrame" in snapshot.provider_diagnostics
+
+
+def test_yahoo_primary_failure_full_retry_resolves_yahoo(
+    monkeypatch: pytest.MonkeyPatch,
+    config: TreasuryHistoryConfig,
+) -> None:
+    config = replace(config, providers=("yahoo_tnx", "fred_dgs10"))
+    retry = TreasuryYieldSnapshot(
+        "^TNX",
+        "2026-07-17",
+        4.541,
+        4.50,
+        4.45,
+        60,
+        source=TreasuryDataSource.YAHOO_TNX,
+        source_name="Yahoo ^TNX",
+        yahoo_full_history_available=True,
+        fetched_at=datetime(2026, 7, 19, tzinfo=timezone.utc),
+    )
+    calls = []
+    monkeypatch.setattr(
+        treasury,
+        "download_treasury_yield_snapshot",
+        lambda loaded_config, attempts=1: calls.append("primary")
+        or (_ for _ in ()).throw(RuntimeError("empty DataFrame")),
+    )
+    monkeypatch.setattr(
+        treasury,
+        "download_treasury_yield_snapshot_with_ticker_history",
+        lambda loaded_config: calls.append("retry") or retry,
+    )
+    monkeypatch.setattr(
+        treasury,
+        "download_fred_treasury_yield_snapshot",
+        lambda loaded_config, now=None: calls.append("fred") or retry,
+    )
+
+    snapshot = resolve_live_treasury_yield_snapshot(
+        config,
+        now=datetime(2026, 7, 19, tzinfo=timezone.utc),
+    )
+
+    assert snapshot.source == TreasuryDataSource.YAHOO_TNX
+    assert snapshot.yahoo_full_history_available is True
+    assert calls == ["primary", "retry"]
+
+
+def test_yahoo_short_history_plus_fred_keeps_fred_as_resolved_source(
+    monkeypatch: pytest.MonkeyPatch,
+    config: TreasuryHistoryConfig,
+) -> None:
+    config = replace(config, providers=("yahoo_tnx", "fred_dgs10"))
+    fred = TreasuryYieldSnapshot(
+        "DGS10",
+        "2026-07-17",
+        4.57,
+        4.51,
+        4.46,
+        60,
+        source=TreasuryDataSource.FRED_DGS10,
+        source_name="FRED DGS10",
+        fetched_at=datetime(2026, 7, 19, tzinfo=timezone.utc),
+    )
+    history = FakeHistory([4.539, 4.541], ["2026-07-16", "2026-07-17"])
+    FakeTicker.history_calls = []
+    monkeypatch.setattr(
+        treasury,
+        "download_treasury_yield_snapshot",
+        lambda loaded_config, attempts=1: (_ for _ in ()).throw(RuntimeError("empty DataFrame")),
+    )
+    monkeypatch.setattr(
+        treasury,
+        "download_treasury_yield_snapshot_with_ticker_history",
+        lambda loaded_config: (_ for _ in ()).throw(RuntimeError("full retry failed")),
+    )
+    monkeypatch.setattr(
+        treasury.yf,
+        "Ticker",
+        lambda symbol: FakeTicker(
+            symbol,
+            history=history,
+            info={"regularMarketPrice": 4.541, "previousClose": 4.54},
+        ),
+    )
+    monkeypatch.setattr(
+        treasury,
+        "download_fred_treasury_yield_snapshot",
+        lambda loaded_config, now=None: fred,
+    )
+
+    snapshot = resolve_live_treasury_yield_snapshot(
+        config,
+        now=datetime(2026, 7, 19, tzinfo=timezone.utc),
+    )
+
+    assert snapshot.source == TreasuryDataSource.FRED_DGS10
+    assert snapshot.current_yield_percent == pytest.approx(4.57)
+    assert snapshot.sma_short_percent == pytest.approx(4.51)
+    assert snapshot.sma_long_percent == pytest.approx(4.46)
+    assert snapshot.yahoo_full_history_available is False
+    assert snapshot.yahoo_short_history_available is True
+    assert snapshot.yahoo_short_history_yield == pytest.approx(4.541)
+    assert snapshot.yahoo_quote_yield == pytest.approx(4.541)
+    assert snapshot.source_difference_percentage_points == pytest.approx(-0.029)
+    assert not snapshot.warnings
+    assert "FRED DGS10 is used for the valuation yield and trend" in snapshot.messages[0]
+    assert "Yahoo ^TNX 5-day history: success" in snapshot.provider_diagnostics
+    assert "Yahoo latest observation: 4.541% on 2026-07-17" in snapshot.provider_diagnostics
+    assert "Resolved source: FRED DGS10" in snapshot.provider_diagnostics
+    assert FakeTicker.history_calls == [
+        (
+            "^TNX",
+            {
+                "period": "5d",
+                "interval": "1d",
+                "auto_adjust": False,
+                "actions": False,
+                "timeout": 10,
+            },
+        )
+    ]
 
 
 def test_yahoo_and_fred_failure_followed_by_treasury_success(
@@ -459,6 +709,26 @@ def test_yahoo_and_fred_failure_followed_by_treasury_success(
         treasury,
         "download_treasury_yield_snapshot",
         lambda loaded_config: (_ for _ in ()).throw(RuntimeError("empty DataFrame")),
+    )
+    monkeypatch.setattr(
+        treasury,
+        "download_treasury_yield_snapshot_with_ticker_history",
+        lambda loaded_config: (_ for _ in ()).throw(RuntimeError("full retry failed")),
+    )
+    monkeypatch.setattr(
+        treasury,
+        "probe_yahoo_treasury_diagnostics",
+        lambda loaded_config: TreasuryYieldSnapshot(
+            "^TNX",
+            "2026-07-17",
+            4.54,
+            4.54,
+            4.54,
+            0,
+            data_status=TreasuryDataStatus.PARTIAL_LIVE,
+            yahoo_short_history_available=False,
+            yahoo_full_history_available=False,
+        ),
     )
     monkeypatch.setattr(
         treasury,

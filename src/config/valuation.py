@@ -173,6 +173,12 @@ def _build_treasury_history_config(
             "macro.treasury_yield",
             False,
         ),
+        source_difference_warning_pct_points=_optional_real_number(
+            section,
+            "source_difference_warning_pct_points",
+            "macro.treasury_yield",
+            0.15,
+        ),
     )
     _validate_domain(config, validate_history_config, "macro.treasury_yield")
     return config
@@ -499,6 +505,7 @@ _TREASURY_FALLBACK_KEYS = {
     "allow_config_fallback",
     "allow_neutral_fallback",
     "fail_analysis_on_download_error",
+    "source_difference_warning_pct_points",
 }
 
 _TREASURY_HISTORY_KEYS = _TREASURY_REQUIRED_HISTORY_KEYS | _TREASURY_FALLBACK_KEYS

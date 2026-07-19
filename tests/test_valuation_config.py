@@ -158,11 +158,12 @@ def test_treasury_fallback_keys_load_when_supplied() -> None:
             "fred_series": "DGS10",
             "max_live_business_days_old": 2,
             "max_cached_age_hours": 3,
-            "allow_config_fallback": False,
-            "allow_neutral_fallback": False,
-            "fail_analysis_on_download_error": True,
-        }
-    )
+                "allow_config_fallback": False,
+                "allow_neutral_fallback": False,
+                "fail_analysis_on_download_error": True,
+                "source_difference_warning_pct_points": 0.2,
+            }
+        )
 
     result = parse_valuation_configuration(document)
 
@@ -173,6 +174,7 @@ def test_treasury_fallback_keys_load_when_supplied() -> None:
     assert result.treasury_history.allow_config_fallback is False
     assert result.treasury_history.allow_neutral_fallback is False
     assert result.treasury_history.fail_analysis_on_download_error is True
+    assert result.treasury_history.source_difference_warning_pct_points == 0.2
 
 
 def test_treasury_provider_order_is_preserved() -> None:
@@ -232,6 +234,7 @@ def test_actual_repository_valuation_yaml_loads_successfully() -> None:
     assert result.treasury_history.max_live_business_days_old == 3
     assert result.treasury_history.fallback_yield_percent == 4.3
     assert result.treasury_history.max_cached_age_hours == 24
+    assert result.treasury_history.source_difference_warning_pct_points == 0.15
     assert result.treasury_yield.threshold_yield_percent == 4.3
     assert result.target_pe.minimum_target_pe == 15.0
     assert result.target_pe.maximum_eps_growth_percent == 40.0

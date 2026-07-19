@@ -13,6 +13,7 @@ macro:
     allow_config_fallback: true
     allow_neutral_fallback: true
     fail_analysis_on_download_error: false
+    source_difference_warning_pct_points: 0.15
     threshold_yield_percent: 4.3
     maximum_discount_percent: 25.0
     short_window_observations: 20
