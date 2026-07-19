@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
@@ -134,10 +135,11 @@ def _run_analysis(st: Any, raw_symbols: str) -> None:
     try:
         progress.progress(85, text="Analyzing SOXX market timing")
         st.session_state["soxx_timing_result"] = analyze_soxx_timing_from_config_file(
-            get_dashboard_config().soxx_timing_config_path
+            _dashboard_config_path(get_dashboard_config().soxx_timing_config_path)
         )
         st.session_state["soxx_timing_error"] = None
     except Exception as exc:
+        st.session_state["soxx_timing_result"] = None
         st.session_state["soxx_timing_error"] = str(exc)
     finally:
         st.session_state["analysis_generated_at"] = datetime.now(timezone.utc)
@@ -148,11 +150,11 @@ def _run_analysis(st: Any, raw_symbols: str) -> None:
 def _render_dashboard(st: Any, result: Any) -> None:
     _summary_metrics(st, result)
     _macro_status(st, result)
+    _soxx_market_timing(st)
     _failure_expander(st, result)
     table = build_ranking_dataframe(result)
     _top_opportunity(st, result)
     filtered = _filters(st, table)
-    _soxx_market_timing(st)
     st.subheader("Multi-Stock Ranking")
     st.dataframe(style_ranking_dataframe(filtered), hide_index=True, width="stretch")
     _downloads(st, result)
@@ -177,10 +179,14 @@ def _soxx_market_timing(st: Any) -> None:
         return
     st.subheader("SOXX Market Timing")
     if error and result is None:
-        st.warning(f"SOXX timing unavailable: {error}")
+        st.warning("SOXX timing unavailable.")
+        with st.expander("SOXX timing technical details"):
+            st.write(error)
         return
     if error:
-        st.warning(f"SOXX timing warning: {error}")
+        st.warning("SOXX timing warning.")
+        with st.expander("SOXX timing technical details"):
+            st.write(error)
     signal = format_text(getattr(result, "primary_signal", None))
     color_key = getattr(result, "signal_color_key", "NEUTRAL_GRAY")
     st.caption(f"Signal color key: {color_key}")
@@ -272,6 +278,13 @@ def _soxx_event_dataframe(result: Any) -> pd.DataFrame:
             }
         )
     return pd.DataFrame(rows)
+
+
+def _dashboard_config_path(path: str) -> str:
+    config_path = Path(path)
+    if config_path.is_absolute():
+        return str(config_path)
+    return str(Path(__file__).resolve().parents[2] / config_path)
 
 
 def _summary_metrics(st: Any, result: Any) -> None:
