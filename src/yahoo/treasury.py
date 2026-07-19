@@ -52,7 +52,7 @@ class TreasuryHistoryConfig:
     value_scale: str
     short_window_observations: int
     long_window_observations: int
-    providers: tuple[str, ...] = ("yahoo_tnx", "fred_dgs10", "us_treasury")
+    providers: tuple[str, ...] = ("yahoo_tnx",)
     fred_series: str = "DGS10"
     max_live_business_days_old: int = 3
     fallback_yield_percent: float | None = 4.30

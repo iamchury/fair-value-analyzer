@@ -15,6 +15,7 @@ from src.config.valuation import (
     load_valuation_configuration,
     parse_valuation_configuration,
 )
+from src.web import dashboard
 from src.yahoo.treasury import TreasuryHistoryConfig
 
 
@@ -99,11 +100,7 @@ def test_parse_complete_valid_mapping() -> None:
     assert result.treasury_history.value_scale == "percent"
     assert result.treasury_history.short_window_observations == 20
     assert result.treasury_history.long_window_observations == 60
-    assert result.treasury_history.providers == (
-        "yahoo_tnx",
-        "fred_dgs10",
-        "us_treasury",
-    )
+    assert result.treasury_history.providers == ("yahoo_tnx",)
     assert result.treasury_history.fred_series == "DGS10"
     assert result.treasury_history.max_live_business_days_old == 3
     assert result.treasury_history.fallback_yield_percent == 4.3
@@ -142,6 +139,9 @@ def test_federal_reserve_section_is_optional_and_ignored() -> None:
 def test_treasury_fallback_keys_are_optional_with_defaults() -> None:
     result = parse_valuation_configuration(valid_document())
 
+    assert result.treasury_history.providers == ("yahoo_tnx",)
+    assert result.treasury_history.fred_series == "DGS10"
+    assert result.treasury_history.max_live_business_days_old == 3
     assert result.treasury_history.fallback_yield_percent == 4.3
     assert result.treasury_history.max_cached_age_hours == 24
     assert result.treasury_history.allow_config_fallback is True
@@ -175,6 +175,23 @@ def test_treasury_fallback_keys_load_when_supplied() -> None:
     assert result.treasury_history.fail_analysis_on_download_error is True
 
 
+def test_treasury_provider_order_is_preserved() -> None:
+    document = valid_document()
+    document["macro"]["treasury_yield"]["providers"] = [
+        "us_treasury",
+        "fred_dgs10",
+        "yahoo_tnx",
+    ]
+
+    result = parse_valuation_configuration(document)
+
+    assert result.treasury_history.providers == (
+        "us_treasury",
+        "fred_dgs10",
+        "yahoo_tnx",
+    )
+
+
 @pytest.mark.parametrize("cap", [20, 40.0, 100])
 def test_maximum_eps_growth_percent_valid_values(cap: float) -> None:
     document = valid_document()
@@ -206,10 +223,28 @@ def test_actual_repository_valuation_yaml_loads_successfully() -> None:
     result = load_valuation_configuration(config_path)
 
     assert result.treasury_history.symbol == "^TNX"
+    assert result.treasury_history.providers == (
+        "yahoo_tnx",
+        "fred_dgs10",
+        "us_treasury",
+    )
+    assert result.treasury_history.fred_series == "DGS10"
+    assert result.treasury_history.max_live_business_days_old == 3
+    assert result.treasury_history.fallback_yield_percent == 4.3
+    assert result.treasury_history.max_cached_age_hours == 24
     assert result.treasury_yield.threshold_yield_percent == 4.3
     assert result.target_pe.minimum_target_pe == 15.0
     assert result.target_pe.maximum_eps_growth_percent == 40.0
     assert result.decision.buy_discount_percent == 20.0
+
+
+@requires_yaml
+def test_streamlit_dashboard_valuation_config_loads_without_exception() -> None:
+    config = dashboard.get_dashboard_config()
+
+    result = load_valuation_configuration(config.valuation_config_path)
+
+    assert result.treasury_history.fred_series == "DGS10"
 
 
 @requires_yaml
@@ -543,6 +578,42 @@ def test_preferred_sector_type_validation(
             r"macro\.treasury_yield",
         ),
         (
+            lambda document: document["macro"]["treasury_yield"].update(
+                {"providers": []}
+            ),
+            r"macro\.treasury_yield",
+        ),
+        (
+            lambda document: document["macro"]["treasury_yield"].update(
+                {"providers": ["yahoo_tnx", "bad_provider"]}
+            ),
+            r"macro\.treasury_yield",
+        ),
+        (
+            lambda document: document["macro"]["treasury_yield"].update(
+                {"providers": ["yahoo_tnx", "yahoo_tnx"]}
+            ),
+            r"macro\.treasury_yield",
+        ),
+        (
+            lambda document: document["macro"]["treasury_yield"].update(
+                {"fallback_yield_percent": -1.0}
+            ),
+            r"macro\.treasury_yield",
+        ),
+        (
+            lambda document: document["macro"]["treasury_yield"].update(
+                {"max_live_business_days_old": -1}
+            ),
+            r"macro\.treasury_yield",
+        ),
+        (
+            lambda document: document["macro"]["treasury_yield"].update(
+                {"max_cached_age_hours": -1}
+            ),
+            r"macro\.treasury_yield",
+        ),
+        (
             lambda document: document["valuation"]["decision"].update(
                 {"buy_discount_percent": 100.0}
             ),
@@ -567,6 +638,22 @@ def test_domain_validation_failures_are_wrapped(
         parse_valuation_configuration(document)
 
     assert isinstance(error.value.__cause__, ValueError)
+
+
+@pytest.mark.parametrize(
+    "misspelled_key",
+    [
+        "fred_seres",
+        "provider",
+        "max_live_business_day_old",
+        "max_cache_age_hours",
+    ],
+)
+def test_misspelled_treasury_provider_keys_are_rejected(misspelled_key: str) -> None:
+    document = valid_document()
+    document["macro"]["treasury_yield"][misspelled_key] = "DGS10"
+
+    assert_config_error(document, rf"macro\.treasury_yield\.{misspelled_key}")
 
 
 @requires_yaml

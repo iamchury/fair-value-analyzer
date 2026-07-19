@@ -402,6 +402,7 @@ def test_yahoo_failure_followed_by_fred_success(
     monkeypatch: pytest.MonkeyPatch,
     config: TreasuryHistoryConfig,
 ) -> None:
+    config = replace(config, providers=("yahoo_tnx", "fred_dgs10"))
     calls = []
     fred = TreasuryYieldSnapshot(
         "DGS10",
@@ -442,6 +443,7 @@ def test_yahoo_and_fred_failure_followed_by_treasury_success(
     monkeypatch: pytest.MonkeyPatch,
     config: TreasuryHistoryConfig,
 ) -> None:
+    config = replace(config, providers=("yahoo_tnx", "fred_dgs10", "us_treasury"))
     official = TreasuryYieldSnapshot(
         "US_TREASURY_10Y",
         "2026-07-17",
@@ -553,6 +555,7 @@ def test_stale_live_observation_falls_through_to_next_provider(
     monkeypatch: pytest.MonkeyPatch,
     config: TreasuryHistoryConfig,
 ) -> None:
+    config = replace(config, providers=("yahoo_tnx", "fred_dgs10"))
     stale = TreasuryYieldSnapshot(
         "^TNX",
         "2026-07-10",

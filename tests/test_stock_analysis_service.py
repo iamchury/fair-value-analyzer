@@ -74,6 +74,11 @@ def treasury_history_config() -> TreasuryHistoryConfig:
         value_scale="percent",
         short_window_observations=20,
         long_window_observations=60,
+        providers=("yahoo_tnx", "fred_dgs10", "us_treasury"),
+        fred_series="DGS10",
+        max_live_business_days_old=3,
+        fallback_yield_percent=4.3,
+        max_cached_age_hours=24,
     )
 
 
@@ -262,6 +267,11 @@ def test_analyze_stock_calls_downloads_then_valuation_in_order(
     )
     assert calls[0] == ("company", "LITE")
     assert calls[1] == ("treasury", configuration.treasury_history)
+    assert isinstance(calls[1][1], TreasuryHistoryConfig)
+    assert calls[1][1].providers == ("yahoo_tnx", "fred_dgs10", "us_treasury")
+    assert calls[1][1].fred_series == "DGS10"
+    assert calls[1][1].max_live_business_days_old == 3
+    assert calls[1][1].max_cached_age_hours == 24
     assert calls[2][0] == "valuation"
     assert calls[2][1].symbol == "LITE"
     assert calls[2][2].target_pe is configuration.target_pe

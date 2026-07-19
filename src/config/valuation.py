@@ -129,7 +129,7 @@ def _build_treasury_history_config(
             section,
             "providers",
             "macro.treasury_yield",
-            ("yahoo_tnx", "fred_dgs10", "us_treasury"),
+            ("yahoo_tnx",),
         ),
         fred_series=_optional_string(
             section,
