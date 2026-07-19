@@ -137,6 +137,55 @@ def test_unknown_option_causes_argparse_exit_2() -> None:
     assert exc_info.value.code == 2
 
 
+def test_soxx_timing_only_does_not_require_stock_symbols(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    calls = []
+    monkeypatch.setattr(
+        main_module,
+        "analyze_soxx_timing_from_config_file",
+        lambda path: calls.append(("soxx", path)) or object(),
+    )
+    monkeypatch.setattr(
+        main_module,
+        "format_soxx_timing_report",
+        lambda result, show_chart_data=False: calls.append(("format", show_chart_data)) or "SOXX REPORT",
+    )
+
+    assert main_module.main(["--soxx-timing", "--soxx-timing-only"]) == 0
+
+    assert calls == [("soxx", "config/soxx_timing.yaml"), ("format", False)]
+    assert capsys.readouterr().out == "SOXX REPORT\n"
+
+
+def test_soxx_timing_report_is_prepended_to_batch_report(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    batch_result = BatchStockAnalysisResult(("MU", "NVDA"), (object(), object()), ())
+    monkeypatch.setattr(main_module, "analyze_soxx_timing_from_config_file", lambda path: object())
+    monkeypatch.setattr(main_module, "format_soxx_timing_report", lambda result, show_chart_data=False: "SOXX REPORT")
+    monkeypatch.setattr(main_module, "analyze_symbol_list_from_config_files", lambda symbols, **kwargs: batch_result)
+    monkeypatch.setattr(main_module, "format_batch_stock_analysis_report", lambda result, **kwargs: "BATCH REPORT")
+
+    exit_code = main_module.main(
+        [
+            "MU",
+            "NVDA",
+            "--soxx-timing",
+            "--ranking-config",
+            "ranking.yaml",
+            "--recommendation-v2-config",
+            "rec.yaml",
+            "--show-ranking",
+        ]
+    )
+
+    assert exit_code == 0
+    assert capsys.readouterr().out == "SOXX REPORT\n\nBATCH REPORT\n"
+
+
 def test_main_uses_explicit_argv_not_global_sys_argv(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],

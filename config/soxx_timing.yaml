@@ -1,0 +1,49 @@
+symbol: "SOXX"
+
+history:
+  period: "2y"
+  interval: "1d"
+  minimum_observations: 60
+  price_field_preference:
+    - "Adj Close"
+    - "Close"
+
+moving_averages:
+  fast: 5
+  buy_sell_levels:
+    initial: 10
+    strong: 15
+    very_strong: 20
+  long: 50
+
+cross:
+  confirmation_days: 1
+  completed_trading_day_only: true
+
+moving_average_convergence:
+  enabled: true
+  periods:
+    - 5
+    - 10
+    - 15
+    - 20
+  max_spread_pct: 1.50
+
+prior_high:
+  lookback_trading_days: 252
+  exclude_current_day: true
+
+thresholds:
+  sell_caution_drawdown_pct: -10.0
+  strong_buy_drawdown_pct: -30.0
+
+display:
+  enabled: true
+  show_chart: true
+  show_signal_history: true
+  signal_history_days: 120
+  default_chart_period: "6m"
+  show_prior_high: true
+  show_drawdown: true
+  show_moving_averages: true
+  show_all_crosses: true

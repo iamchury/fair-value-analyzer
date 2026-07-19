@@ -70,6 +70,79 @@ should remain pure and unit-testable.
   remain separated.
 - No model may recalculate values inside a report formatter.
 - Every result must indicate source, period, status, and assumptions.
+- Technical timing references must remain separate from intrinsic valuation
+  formulas and ranking scores unless an explicit future design defines a bridge.
+
+## SOXX Buy/Sell Timing Engine V1
+
+SOXX is the semiconductor-cycle timing benchmark for this application. The
+SOXX Buy/Sell Timing Engine is a technical timing reference only; it is not
+intrinsic value, automatic order execution, bottom detection, or future-price
+prediction.
+
+The engine uses completed daily SOXX price history and calculates MA5, MA10,
+MA15, MA20, MA50, a rolling prior high, drawdown, and short moving-average
+convergence. The price field preference is Adjusted Close first, then Close,
+while preserving the actual field used in the result.
+
+A crossover is an event:
+
+```text
+Bullish cross:
+previous_ma5 <= previous_maN
+and current_ma5 > current_maN
+
+Bearish cross:
+previous_ma5 >= previous_maN
+and current_ma5 < current_maN
+```
+
+Persistent relative position is not a new crossover. If MA5 remains above MA10
+after a prior cross, the UI should display the position as MA5 ABOVE MA10 or NO
+NEW CROSS, not as a new BUY signal.
+
+Graded buy signals:
+
+- BUY: MA5 crosses above MA10.
+- STRONG_BUY: MA5 crosses above MA15.
+- VERY_STRONG_BUY: MA5 crosses above MA20.
+
+Graded sell signals:
+
+- SELL: MA5 crosses below MA10.
+- STRONG_SELL: MA5 crosses below MA15.
+- VERY_STRONG_SELL: MA5 crosses below MA20.
+
+SELL_CAUTION is an active risk condition when SOXX is at least 10% below its
+rolling prior high. Event history records the first threshold breach, not every
+day spent below the threshold.
+
+The deep-drawdown recovery rule activates when SOXX is at least 30% below its
+rolling prior high, MA5/MA15/MA20 remain below MA50, and MA5 crosses above
+MA15. If MA5 also crosses above MA20, the primary signal becomes
+VERY_STRONG_BUY.
+
+The convergence sell setup activates when MA5, MA10, MA15, and MA20 are within
+the configured spread threshold above MA50, followed by MA5 crossing below
+MA15. If MA5 also crosses below MA20, the primary signal becomes
+VERY_STRONG_SELL.
+
+Rolling prior high must avoid look-ahead bias:
+
+```text
+prior_high(t) = max(close during prior lookback window, excluding t)
+```
+
+The Streamlit dashboard presents SOXX Market Timing before ordinary
+Multi-Stock Ranking. The CLI supports:
+
+```bash
+python -m src.main --soxx-timing --soxx-timing-only
+```
+
+SOXX timing has a separate CSV/JSON serialization and must not be mixed into
+intrinsic valuation, Recommendation V2, Agreement Engine, Fair Value Range, or
+Multi-Stock Ranking scores.
 
 ## 4. Current Problem Examples
 

@@ -13,6 +13,8 @@ analyze_stocks_with_profiles_from_config_files: Callable[..., object] | None = N
 analyze_symbol_list_with_profiles_from_config_files: Callable[..., object] | None = None
 inspect_stock_eps: Callable[..., object] | None = None
 format_eps_inspection_report: Callable[[object], str] | None = None
+analyze_soxx_timing_from_config_file: Callable[..., object] | None = None
+format_soxx_timing_report: Callable[..., str] | None = None
 _EXPECTED_ERRORS: tuple[type[BaseException], ...] | None = None
 
 
@@ -125,6 +127,26 @@ def build_parser() -> argparse.ArgumentParser:
         default="text",
         help="Ranking output format. Default: text",
     )
+    parser.add_argument(
+        "--soxx-timing",
+        action="store_true",
+        help="Append the SOXX buy/sell timing section before valuation output.",
+    )
+    parser.add_argument(
+        "--soxx-timing-config",
+        default="config/soxx_timing.yaml",
+        help="Path to SOXX timing configuration YAML. Default: config/soxx_timing.yaml",
+    )
+    parser.add_argument(
+        "--soxx-timing-only",
+        action="store_true",
+        help="Print only SOXX buy/sell timing output.",
+    )
+    parser.add_argument(
+        "--show-soxx-chart-data",
+        action="store_true",
+        help="Append recent SOXX timing chart data to the CLI report.",
+    )
     return parser
 
 
@@ -133,8 +155,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     has_symbols = bool(args.symbols)
-    if has_symbols == bool(args.stocks):
+    if args.soxx_timing_only:
+        args.soxx_timing = True
+    if not args.soxx_timing_only and has_symbols == bool(args.stocks):
         parser.error("provide exactly one of symbol or --stocks.")
+    if args.soxx_timing_only and (has_symbols or args.stocks):
+        parser.error("--soxx-timing-only does not accept ordinary stock symbols or --stocks.")
     if args.inspect_eps and args.stocks:
         parser.error("--inspect-eps does not support --stocks.")
     if args.inspect_eps and len(args.symbols) != 1:
@@ -203,6 +229,16 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         analysis_options = _analysis_options(args)
         formatter_options = _formatter_options(args)
+        soxx_report = None
+        if args.soxx_timing:
+            soxx_result = dependencies.soxx_analyzer(args.soxx_timing_config)
+            soxx_report = dependencies.soxx_formatter(
+                soxx_result,
+                show_chart_data=args.show_soxx_chart_data,
+            )
+            if args.soxx_timing_only:
+                print(soxx_report)
+                return 0
 
         if args.stocks:
             if args.profiles:
@@ -223,7 +259,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 if formatter_options
                 else dependencies.batch_formatter(result)
             )
-            print(report)
+            print(_prepend_soxx_report(soxx_report, report))
             if result.failure_count == 0:
                 return 0
             if result.success_count == 0:
@@ -249,7 +285,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 if formatter_options
                 else dependencies.batch_formatter(result)
             )
-            print(report)
+            print(_prepend_soxx_report(soxx_report, report))
             if result.failure_count == 0:
                 return 0
             if result.success_count == 0:
@@ -278,7 +314,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
 
-    print(report)
+    print(_prepend_soxx_report(soxx_report, report))
     return 0
 
 
@@ -295,6 +331,8 @@ class _RuntimeDependencies:
         batch_symbol_profile_analyzer: Callable[..., object],
         eps_inspector: Callable[..., object],
         eps_formatter: Callable[[object], str],
+        soxx_analyzer: Callable[..., object],
+        soxx_formatter: Callable[..., str],
         expected_errors: tuple[type[BaseException], ...],
     ) -> None:
         self.single_analyzer = single_analyzer
@@ -307,6 +345,8 @@ class _RuntimeDependencies:
         self.batch_symbol_profile_analyzer = batch_symbol_profile_analyzer
         self.eps_inspector = eps_inspector
         self.eps_formatter = eps_formatter
+        self.soxx_analyzer = soxx_analyzer
+        self.soxx_formatter = soxx_formatter
         self.expected_errors = expected_errors
 
 
@@ -321,6 +361,8 @@ def _load_runtime_dependencies() -> _RuntimeDependencies:
     global analyze_symbol_list_with_profiles_from_config_files
     global inspect_stock_eps
     global format_eps_inspection_report
+    global analyze_soxx_timing_from_config_file
+    global format_soxx_timing_report
     global _EXPECTED_ERRORS
 
     if analyze_stock_from_config_file is None:
@@ -383,6 +425,18 @@ def _load_runtime_dependencies() -> _RuntimeDependencies:
         )
 
         format_eps_inspection_report = eps_report_formatter
+    if analyze_soxx_timing_from_config_file is None:
+        from src.services.soxx_timing import (
+            analyze_soxx_timing_from_config_file as service_analyze_soxx_timing,
+        )
+
+        analyze_soxx_timing_from_config_file = service_analyze_soxx_timing
+    if format_soxx_timing_report is None:
+        from src.reports.soxx_timing_report import (
+            format_soxx_timing_report as soxx_report_formatter,
+        )
+
+        format_soxx_timing_report = soxx_report_formatter
     if _EXPECTED_ERRORS is None:
         from src.config.stocks import StocksConfigurationError
         from src.config.analyst_consensus import AnalystConsensusConfigurationError
@@ -396,10 +450,12 @@ def _load_runtime_dependencies() -> _RuntimeDependencies:
         from src.config.valuation import ValuationConfigurationError
         from src.config.valuation_profiles import ValuationProfileConfigurationError
         from src.services.eps_inspection import EPSInspectionServiceError
+        from src.config.soxx_timing import SoxxTimingConfigurationError
         from src.services.stock_analysis import StockAnalysisServiceError
 
         _EXPECTED_ERRORS = (
             EPSInspectionServiceError,
+            SoxxTimingConfigurationError,
             AnalystConsensusConfigurationError,
             AgreementEngineConfigurationError,
             MomentumReferenceConfigurationError,
@@ -427,6 +483,8 @@ def _load_runtime_dependencies() -> _RuntimeDependencies:
         analyze_symbol_list_with_profiles_from_config_files,
         inspect_stock_eps,
         format_eps_inspection_report,
+        analyze_soxx_timing_from_config_file,
+        format_soxx_timing_report,
         _EXPECTED_ERRORS,
     )
 
@@ -450,6 +508,12 @@ def _analysis_options(args: argparse.Namespace) -> dict[str, str]:
     if args.ranking_config:
         options["ranking_config_path"] = args.ranking_config
     return options
+
+
+def _prepend_soxx_report(soxx_report: str | None, report: str) -> str:
+    if not soxx_report:
+        return report
+    return f"{soxx_report}\n\n{report}"
 
 
 def _formatter_options(args: argparse.Namespace) -> dict[str, object]:

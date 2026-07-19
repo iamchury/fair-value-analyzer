@@ -34,6 +34,7 @@ class FakeStreamlit:
         self.metrics = []
         self.warnings = []
         self.infos = []
+        self.line_charts = []
         self.selected_symbol = None
         self.selected_filters = {}
 
@@ -68,6 +69,10 @@ class FakeStreamlit:
         return None
 
     def bar_chart(self, *_args, **_kwargs):
+        return None
+
+    def line_chart(self, *args, **_kwargs):
+        self.line_charts.append(args)
         return None
 
     def table(self, *_args, **_kwargs):
@@ -111,6 +116,7 @@ def test_run_analysis_stores_batch_result_in_session_state(monkeypatch: pytest.M
     batch = result([entry("MU", 1, 70)])
 
     monkeypatch.setattr(dashboard, "analyze_symbols_for_dashboard", lambda symbols: batch)
+    monkeypatch.setattr(dashboard, "analyze_soxx_timing_from_config_file", lambda path: object())
 
     dashboard._run_analysis(fake, "mu")
 
@@ -129,6 +135,7 @@ def test_analyze_invokes_service_once_and_second_click_invokes_again(monkeypatch
         return result([entry("MU", 1, 70)])
 
     monkeypatch.setattr(dashboard, "analyze_symbols_for_dashboard", analyze)
+    monkeypatch.setattr(dashboard, "analyze_soxx_timing_from_config_file", lambda path: object())
 
     dashboard._run_analysis(fake, "MU")
     dashboard._run_analysis(fake, "MU")
@@ -164,12 +171,55 @@ def test_analysis_failure_sets_error_and_preserves_previous_result(monkeypatch: 
         raise RuntimeError("service exploded")
 
     monkeypatch.setattr(dashboard, "analyze_symbols_for_dashboard", fail)
+    monkeypatch.setattr(dashboard, "analyze_soxx_timing_from_config_file", lambda path: object())
 
     dashboard._run_analysis(fake, "MU")
 
     assert fake.session_state["analysis_result"] is previous
+    assert fake.session_state["soxx_timing_result"] is not None
     assert fake.session_state["analysis_error"] == "service exploded"
     assert fake.errors
+
+
+def test_soxx_timing_section_renders_before_ranking(monkeypatch: pytest.MonkeyPatch) -> None:
+    fake = FakeStreamlit()
+    calls = []
+    soxx = SimpleNamespace(
+        primary_signal="BUY",
+        signal_strength="INITIAL",
+        signal_color_key="BUY_LIGHT_GREEN",
+        current_price=100.0,
+        prior_high_price=110.0,
+        drawdown_pct=-9.09,
+        as_of_date="2026-07-17",
+        ma5=101.0,
+        ma10=100.0,
+        ma15=99.0,
+        ma20=98.0,
+        ma50=95.0,
+        ma5_ma10_cross=SimpleNamespace(direction="CROSS_ABOVE"),
+        ma5_ma15_cross=SimpleNamespace(direction="NONE"),
+        ma5_ma20_cross=SimpleNamespace(direction="NONE"),
+        short_ma_converged=True,
+        short_cluster_above_ma50=True,
+        short_cluster_below_ma50=False,
+        active_conditions=("BUY",),
+        rationale=("MA5 crossed above MA10.",),
+        daily_points=(),
+        events=(),
+        status="COMPLETE",
+    )
+    fake.session_state["soxx_timing_result"] = soxx
+    batch = result([entry("MU", 1, 70)])
+    monkeypatch.setattr(dashboard, "_filters", lambda st, table: calls.append("filters") or table)
+    monkeypatch.setattr(dashboard, "_downloads", lambda st, result: calls.append("downloads"))
+    monkeypatch.setattr(dashboard, "_valuation_chart", lambda st, result, symbol: None)
+    monkeypatch.setattr(dashboard, "_detail_tabs", lambda st, result, entry, analysis: None)
+
+    dashboard._render_dashboard(fake, batch)
+
+    assert ("Primary Signal", "Buy") in fake.metrics
+    assert calls == ["filters", "downloads"]
 
 
 def test_dashboard_config_cache_resource_returns_config() -> None:

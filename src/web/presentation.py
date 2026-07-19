@@ -39,11 +39,15 @@ RANKING_COLUMNS = [
 _SYMBOL_RE = re.compile(r"^[A-Z0-9.^=\-]+$")
 _DISPLAY_LABELS = {
     "STRONG_BUY": "Strong Buy",
+    "VERY_STRONG_BUY": "Very Strong Buy",
     "BUY": "Buy",
     "ACCUMULATE": "Accumulate",
     "HOLD": "Hold",
     "REDUCE": "Reduce",
     "SELL": "Sell",
+    "STRONG_SELL": "Strong Sell",
+    "VERY_STRONG_SELL": "Very Strong Sell",
+    "SELL_CAUTION": "Sell Caution",
     "AVOID": "Avoid",
     "INSUFFICIENT_DATA": "Insufficient Data",
     "TOP_OPPORTUNITY": "Top Opportunity",
@@ -122,6 +126,7 @@ class WebConfigPaths:
     range_config_path: str = "config/fair_value_range.yaml"
     recommendation_v2_config_path: str = "config/recommendation_v2.yaml"
     ranking_config_path: str = "config/ranking_engine.yaml"
+    soxx_timing_config_path: str = "config/soxx_timing.yaml"
 
 
 DEFAULT_WEB_CONFIG = WebConfigPaths()

@@ -7,6 +7,7 @@ import pandas as pd
 import streamlit as streamlit_module
 
 from src.services.batch_analysis import analyze_symbol_list_with_profiles_from_config_files
+from src.services.soxx_timing import analyze_soxx_timing_from_config_file
 from src.config.recommendation_v2 import load_recommendation_v2_configuration
 from src.web.presentation import (
     DEFAULT_SYMBOL_TEXT,
@@ -98,6 +99,7 @@ def run() -> None:
 
     result = st.session_state.get("analysis_result")
     if result is None:
+        _soxx_market_timing(st)
         if st.session_state.get("analysis_error"):
             st.error("Analysis failed.")
             with st.expander("Technical details"):
@@ -123,15 +125,23 @@ def _run_analysis(st: Any, raw_symbols: str) -> None:
         progress.progress(75, text="Building ranking and RSI 50 reference views")
         st.session_state["analysis_result"] = result
         st.session_state["analysis_symbols"] = symbols
-        st.session_state["analysis_generated_at"] = datetime.now(timezone.utc)
         st.session_state["analysis_error"] = None
-        progress.progress(100, text="Analysis complete")
     except Exception as exc:
         st.session_state["analysis_error"] = str(exc)
         st.error("Analysis failed. Expand technical details for more information.")
         with st.expander("Technical details"):
             st.exception(exc)
+    try:
+        progress.progress(85, text="Analyzing SOXX market timing")
+        st.session_state["soxx_timing_result"] = analyze_soxx_timing_from_config_file(
+            get_dashboard_config().soxx_timing_config_path
+        )
+        st.session_state["soxx_timing_error"] = None
+    except Exception as exc:
+        st.session_state["soxx_timing_error"] = str(exc)
     finally:
+        st.session_state["analysis_generated_at"] = datetime.now(timezone.utc)
+        progress.progress(100, text="Analysis complete")
         progress.empty()
 
 
@@ -142,6 +152,7 @@ def _render_dashboard(st: Any, result: Any) -> None:
     table = build_ranking_dataframe(result)
     _top_opportunity(st, result)
     filtered = _filters(st, table)
+    _soxx_market_timing(st)
     st.subheader("Multi-Stock Ranking")
     st.dataframe(style_ranking_dataframe(filtered), hide_index=True, width="stretch")
     _downloads(st, result)
@@ -157,6 +168,110 @@ def _render_dashboard(st: Any, result: Any) -> None:
     analysis = get_successful_result(result, selected)
     _valuation_chart(st, result, selected)
     _detail_tabs(st, result, entry, analysis)
+
+
+def _soxx_market_timing(st: Any) -> None:
+    result = st.session_state.get("soxx_timing_result")
+    error = st.session_state.get("soxx_timing_error")
+    if result is None and not error:
+        return
+    st.subheader("SOXX Market Timing")
+    if error and result is None:
+        st.warning(f"SOXX timing unavailable: {error}")
+        return
+    if error:
+        st.warning(f"SOXX timing warning: {error}")
+    signal = format_text(getattr(result, "primary_signal", None))
+    color_key = getattr(result, "signal_color_key", "NEUTRAL_GRAY")
+    st.caption(f"Signal color key: {color_key}")
+    first = st.columns(2)
+    first[0].metric("Primary Signal", signal)
+    first[1].metric("Signal Strength", format_text(getattr(result, "signal_strength", None)))
+    metrics = [
+        ("Current SOXX Price", format_price(getattr(result, "current_price", None))),
+        ("Prior High", format_price(getattr(result, "prior_high_price", None))),
+        ("Drawdown", format_percent(getattr(result, "drawdown_pct", None), signed=True)),
+        ("Signal Date", format_text(getattr(result, "as_of_date", None))),
+        ("MA5", format_number(getattr(result, "ma5", None))),
+        ("MA10", format_number(getattr(result, "ma10", None))),
+        ("MA15", format_number(getattr(result, "ma15", None))),
+        ("MA20", format_number(getattr(result, "ma20", None))),
+        ("MA50", format_number(getattr(result, "ma50", None))),
+        ("MA5 vs MA10", _cross_or_position(result, "ma5_ma10_cross", "ma5", "ma10")),
+        ("MA5 vs MA15", _cross_or_position(result, "ma5_ma15_cross", "ma5", "ma15")),
+        ("MA5 vs MA20", _cross_or_position(result, "ma5_ma20_cross", "ma5", "ma20")),
+        ("Short-MA Convergence", "Converged" if getattr(result, "short_ma_converged", False) else "Not Converged"),
+        ("MA Cluster vs MA50", _cluster_position(result)),
+        ("Status", format_text(getattr(result, "status", None))),
+    ]
+    for offset in range(0, len(metrics), 2):
+        cols = st.columns(2)
+        for index, (label, value) in enumerate(metrics[offset : offset + 2]):
+            cols[index].metric(label, value)
+    active = ", ".join(format_text(item) for item in tuple(getattr(result, "active_conditions", ()) or ())) or "None"
+    st.info(f"Active Conditions: {active}")
+    for line in tuple(getattr(result, "rationale", ()) or ()):
+        st.caption(line)
+    chart = _soxx_chart_dataframe(result)
+    if not chart.empty:
+        st.line_chart(chart, x="Date", y=[column for column in chart.columns if column != "Date"], use_container_width=True)
+    events = _soxx_event_dataframe(result)
+    if not events.empty:
+        st.dataframe(events, hide_index=True, width="stretch")
+
+
+def _cross_or_position(result: Any, cross_name: str, fast_name: str, slow_name: str) -> str:
+    cross = getattr(getattr(result, cross_name, None), "direction", None)
+    cross_text = format_text(cross)
+    if cross_text not in {"None", "Unavailable", "N/A"}:
+        return cross_text
+    fast = getattr(result, fast_name, None)
+    slow = getattr(result, slow_name, None)
+    if fast is None or slow is None:
+        return "No New Cross"
+    position = "Above" if fast > slow else "Below" if fast < slow else "Equal"
+    return f"No New Cross / MA5 {position}"
+
+
+def _cluster_position(result: Any) -> str:
+    if getattr(result, "short_cluster_above_ma50", False):
+        return "Short Cluster Above MA50"
+    if getattr(result, "short_cluster_below_ma50", False):
+        return "Short Cluster Below MA50"
+    return "Mixed"
+
+
+def _soxx_chart_dataframe(result: Any) -> pd.DataFrame:
+    rows = []
+    for point in tuple(getattr(result, "daily_points", ()) or ())[-126:]:
+        rows.append(
+            {
+                "Date": point.date,
+                "SOXX Price": point.close,
+                "MA5": point.ma5,
+                "MA10": point.ma10,
+                "MA15": point.ma15,
+                "MA20": point.ma20,
+                "MA50": point.ma50,
+                "Prior High": point.prior_high_price,
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def _soxx_event_dataframe(result: Any) -> pd.DataFrame:
+    rows = []
+    for event in tuple(getattr(result, "events", ()) or ()):
+        rows.append(
+            {
+                "Date": event.date,
+                "Signal": format_text(event.signal),
+                "Close": format_price(event.close),
+                "Drawdown": format_percent(event.drawdown_pct, signed=True),
+                "Cross": format_text(event.cross_direction),
+            }
+        )
+    return pd.DataFrame(rows)
 
 
 def _summary_metrics(st: Any, result: Any) -> None:

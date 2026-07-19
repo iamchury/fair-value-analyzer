@@ -9,10 +9,10 @@ and Streamlit.
 ![Status: Beta](https://img.shields.io/badge/Status-Beta-orange)
 
 Fair Value Analyzer helps compare stocks through intrinsic valuation,
-fair-value ranges, Recommendation V2, RSI50 momentum reference, and multi-stock
-ranking. It keeps valuation models, analyst targets, technical momentum, and
-ranking evidence visible as separate signals instead of collapsing everything
-into one opaque score.
+fair-value ranges, Recommendation V2, RSI50 momentum reference, SOXX market
+timing, and multi-stock ranking. It keeps valuation models, analyst targets,
+technical momentum, semiconductor-cycle timing, and ranking evidence visible as
+separate signals instead of collapsing everything into one opaque score.
 
 ## Why this project?
 
@@ -34,6 +34,7 @@ disagreement instead of averaging it away.
 - Recommendation V2
 - Agreement Engine
 - RSI50 Momentum Reference
+- SOXX Buy/Sell Timing Engine
 - Multi-Stock Ranking
 - Streamlit Dashboard
 - CSV / JSON Export
@@ -48,6 +49,7 @@ disagreement instead of averaging it away.
 | Recommendation Engine V2 | Generates deterministic valuation-aware recommendation output with rationale. |
 | Agreement Engine | Evaluates consistency across valuation snapshots and highlights outliers. |
 | RSI50 Momentum Reference | Reports the latest RSI 50 neutral-line reference as technical momentum context. |
+| SOXX Buy/Sell Timing Engine | Tracks SOXX MA5 crossovers, drawdown, convergence, and semiconductor-cycle timing signals. |
 | Multi-stock Ranking | Ranks analyzed symbols while preserving eligibility and insufficient-data states. |
 | Streamlit Dashboard | Provides an interactive web dashboard for ranking, details, charts, and warnings. |
 | CSV / JSON Export | Exports ranking results using stable CSV and JSON formats. |
@@ -132,6 +134,7 @@ the command line interface.
 
 Dashboard views include:
 
+- SOXX Market Timing
 - Top Eligible Opportunity
 - Multi-stock Ranking Table
 - Valuation Comparison
@@ -243,6 +246,25 @@ Inspect Yahoo EPS source data:
 python -m src.main MU --inspect-eps
 ```
 
+Run SOXX timing only:
+
+```bash
+python -m src.main \
+  --soxx-timing \
+  --soxx-timing-config config/soxx_timing.yaml \
+  --soxx-timing-only
+```
+
+Append SOXX timing before ordinary ranking output:
+
+```bash
+python -m src.main MU NVDA AMAT \
+  --soxx-timing \
+  --ranking-config config/ranking_engine.yaml \
+  --recommendation-v2-config config/recommendation_v2.yaml \
+  --show-ranking
+```
+
 ## Running Web Dashboard
 
 Start the Streamlit app:
@@ -282,6 +304,7 @@ thresholds, RSI50 momentum settings, and ranking weights.
 | `config/agreement_engine.yaml` | Agreement thresholds and outlier settings. |
 | `config/fair_value_range.yaml` | Fair-value range construction and confidence weights. |
 | `config/momentum_reference.yaml` | RSI50 momentum reference lookback and calculation settings. |
+| `config/soxx_timing.yaml` | SOXX buy/sell timing settings for MA crossovers, drawdown, convergence, and display. |
 | `config/recommendation_v2.yaml` | Recommendation V2 thresholds and decision constraints. |
 | `config/ranking_engine.yaml` | Multi-stock ranking weights, eligibility, and RSI50 display bands. |
 
@@ -309,6 +332,26 @@ The RSI50 reference is the price associated with the latest RSI 50 neutral-line
 transition or configured fallback. It is a technical momentum and sentiment
 reference, not intrinsic value, guaranteed support, or investor average cost.
 
+### SOXX Market Timing
+
+SOXX timing is a semiconductor-cycle technical reference. It uses completed
+daily SOXX price history, MA5, MA10, MA15, MA20, MA50, rolling prior high, and
+short moving-average convergence. A crossover is an event, not a persistent
+position: MA5 must move from at-or-below to above a slower moving average for a
+buy signal, or from at-or-above to below for a sell signal.
+
+Signals are graded as BUY, STRONG_BUY, VERY_STRONG_BUY, SELL, STRONG_SELL,
+VERY_STRONG_SELL, and SELL_CAUTION. SELL_CAUTION appears when SOXX is at least
+10% below its rolling prior high. A deep-drawdown recovery condition is tracked
+when SOXX is at least 30% below its prior high and MA5 crosses above MA15 while
+MA5, MA15, and MA20 remain below MA50. Convergence tracks whether MA5, MA10,
+MA15, and MA20 are tightly clustered before a sell setup. Rolling prior high
+uses prior observations only, avoiding look-ahead bias.
+
+SOXX timing is not intrinsic value and is not mixed into ranking scores,
+Recommendation V2, analyst consensus, or fair-value calculations. It is a
+separate timing reference with text labels and graded color keys for display.
+
 ### Recommendation V2
 
 Recommendation V2 is a deterministic decision layer that considers valuation
@@ -333,6 +376,7 @@ Completed:
 - Agreement Engine
 - Fair Value Range
 - RSI50 Momentum
+- SOXX Buy/Sell Timing Engine
 - Ranking Engine
 - Streamlit Dashboard
 
@@ -360,6 +404,7 @@ quality.
 | Agreement Engine | Completed | High |
 | Fair Value Range | Completed | High |
 | RSI50 Momentum Reference | Completed | Medium |
+| SOXX Buy/Sell Timing Engine | Completed | Medium |
 | Multi-stock Ranking | Completed | High |
 | Streamlit Dashboard | Completed | High |
 | Portfolio Dashboard | In Progress | High |
