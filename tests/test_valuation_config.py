@@ -99,6 +99,13 @@ def test_parse_complete_valid_mapping() -> None:
     assert result.treasury_history.value_scale == "percent"
     assert result.treasury_history.short_window_observations == 20
     assert result.treasury_history.long_window_observations == 60
+    assert result.treasury_history.providers == (
+        "yahoo_tnx",
+        "fred_dgs10",
+        "us_treasury",
+    )
+    assert result.treasury_history.fred_series == "DGS10"
+    assert result.treasury_history.max_live_business_days_old == 3
     assert result.treasury_history.fallback_yield_percent == 4.3
     assert result.treasury_history.max_cached_age_hours == 24
     assert result.treasury_history.allow_config_fallback is True
@@ -147,6 +154,9 @@ def test_treasury_fallback_keys_load_when_supplied() -> None:
     document["macro"]["treasury_yield"].update(
         {
             "fallback_yield_percent": 4.9,
+            "providers": ["fred_dgs10", "us_treasury"],
+            "fred_series": "DGS10",
+            "max_live_business_days_old": 2,
             "max_cached_age_hours": 3,
             "allow_config_fallback": False,
             "allow_neutral_fallback": False,
@@ -157,6 +167,8 @@ def test_treasury_fallback_keys_load_when_supplied() -> None:
     result = parse_valuation_configuration(document)
 
     assert result.treasury_history.fallback_yield_percent == 4.9
+    assert result.treasury_history.providers == ("fred_dgs10", "us_treasury")
+    assert result.treasury_history.max_live_business_days_old == 2
     assert result.treasury_history.max_cached_age_hours == 3
     assert result.treasury_history.allow_config_fallback is False
     assert result.treasury_history.allow_neutral_fallback is False
@@ -436,6 +448,18 @@ def test_unexpected_keys_raise(
             "allow_config_fallback",
             "true",
             r"allow_config_fallback",
+        ),
+        (
+            ("macro", "treasury_yield"),
+            "providers",
+            "fred_dgs10",
+            r"providers",
+        ),
+        (
+            ("macro", "treasury_yield"),
+            "max_live_business_days_old",
+            3.0,
+            r"max_live_business_days_old",
         ),
     ],
 )

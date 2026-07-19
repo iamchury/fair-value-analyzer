@@ -33,6 +33,7 @@ class FakeStreamlit:
         self.exceptions = []
         self.metrics = []
         self.warnings = []
+        self.infos = []
         self.selected_symbol = None
         self.selected_filters = {}
 
@@ -79,7 +80,8 @@ class FakeStreamlit:
     def success(self, *_args, **_kwargs):
         return None
 
-    def info(self, *_args, **_kwargs):
+    def info(self, *args, **_kwargs):
+        self.infos.append(args)
         return None
 
     def caption(self, *_args, **_kwargs):
@@ -182,6 +184,7 @@ def test_macro_status_propagates_to_dashboard() -> None:
     batch = result([entry("MU", 1, 70)])
     batch.treasury_status = TreasuryDataStatus.CONFIG_FALLBACK
     batch.treasury_yield_percent = 4.3
+    batch.treasury_source_name = "Configured Fallback"
     batch.treasury_source_date = "2026-07-19"
     batch.treasury_trend = "NEUTRAL"
     batch.treasury_warning = (
@@ -192,9 +195,29 @@ def test_macro_status_propagates_to_dashboard() -> None:
     dashboard._macro_status(fake, batch)
 
     assert ("US 10Y Yield", "4.30%") in fake.metrics
+    assert ("Source", "Configured Fallback") in fake.metrics
     assert ("Data Status", "Config Fallback") in fake.metrics
     assert ("Fallback Used", "Yes") in fake.metrics
     assert len(fake.warnings) == 1
+
+
+def test_macro_status_displays_live_alternative_source_as_info() -> None:
+    fake = FakeStreamlit()
+    batch = result([entry("MU", 1, 70)])
+    batch.treasury_status = TreasuryDataStatus.LIVE
+    batch.treasury_yield_percent = 4.57
+    batch.treasury_source_name = "FRED DGS10"
+    batch.treasury_source_date = "2026-07-17"
+    batch.treasury_trend = "RISING"
+    batch.treasury_message = "Yahoo ^TNX was unavailable. Treasury data was loaded from FRED DGS10."
+    batch.treasury_used_fallback = False
+
+    dashboard._macro_status(fake, batch)
+
+    assert ("Source", "FRED DGS10") in fake.metrics
+    assert ("Fallback Used", "No") in fake.metrics
+    assert len(fake.warnings) == 0
+    assert len(fake.infos) == 1
 
 
 def test_cli_entry_point_module_still_exposes_main() -> None:

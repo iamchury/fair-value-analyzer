@@ -1,4 +1,5 @@
-from datetime import date, datetime
+from dataclasses import replace
+from datetime import date, datetime, timezone
 from math import inf, nan
 
 import pytest
@@ -6,13 +7,17 @@ import pytest
 from src.yahoo import treasury
 from src.yahoo.treasury import (
     TreasuryDataStatus,
+    TreasuryDataSource,
     TreasuryHistoryConfig,
     TreasuryYieldSnapshot,
     calculate_treasury_snapshot,
     configured_fallback_treasury_snapshot,
+    download_fred_treasury_yield_snapshot,
     download_treasury_yield_snapshot,
+    download_us_treasury_yield_snapshot,
     extract_valid_close_values,
     normalize_yield_value,
+    resolve_live_treasury_yield_snapshot,
     unavailable_treasury_snapshot,
     validate_history_config,
 )
@@ -355,3 +360,248 @@ def test_unavailable_snapshot_records_neutral_status_and_warning(
     assert snapshot.current_yield_percent == pytest.approx(4.3)
     assert snapshot.used_fallback is True
     assert "applied neutrally" in snapshot.warnings[0]
+
+
+def test_yahoo_success_prevents_fred_request(
+    monkeypatch: pytest.MonkeyPatch,
+    config: TreasuryHistoryConfig,
+) -> None:
+    calls = []
+    yahoo = TreasuryYieldSnapshot(
+        "^TNX",
+        "2026-07-17",
+        4.56,
+        4.50,
+        4.45,
+        60,
+        fetched_at=datetime(2026, 7, 19, tzinfo=timezone.utc),
+    )
+    monkeypatch.setattr(
+        treasury,
+        "download_treasury_yield_snapshot",
+        lambda loaded_config: calls.append("yahoo") or yahoo,
+    )
+    monkeypatch.setattr(
+        treasury,
+        "download_fred_treasury_yield_snapshot",
+        lambda loaded_config, now=None: calls.append("fred") or yahoo,
+    )
+
+    snapshot = resolve_live_treasury_yield_snapshot(
+        config,
+        now=datetime(2026, 7, 19, tzinfo=timezone.utc),
+    )
+
+    assert snapshot is not None
+    assert calls == ["yahoo"]
+    assert snapshot.source == TreasuryDataSource.YAHOO_TNX
+    assert snapshot.used_fallback is False
+
+
+def test_yahoo_failure_followed_by_fred_success(
+    monkeypatch: pytest.MonkeyPatch,
+    config: TreasuryHistoryConfig,
+) -> None:
+    calls = []
+    fred = TreasuryYieldSnapshot(
+        "DGS10",
+        "2026-07-17",
+        4.57,
+        4.51,
+        4.46,
+        60,
+        source=TreasuryDataSource.FRED_DGS10,
+        source_name="FRED DGS10",
+        fetched_at=datetime(2026, 7, 19, tzinfo=timezone.utc),
+    )
+    monkeypatch.setattr(
+        treasury,
+        "download_treasury_yield_snapshot",
+        lambda loaded_config: calls.append("yahoo") or (_ for _ in ()).throw(RuntimeError("empty DataFrame")),
+    )
+    monkeypatch.setattr(
+        treasury,
+        "download_fred_treasury_yield_snapshot",
+        lambda loaded_config, now=None: calls.append("fred") or fred,
+    )
+
+    snapshot = resolve_live_treasury_yield_snapshot(
+        config,
+        now=datetime(2026, 7, 19, tzinfo=timezone.utc),
+    )
+
+    assert calls == ["yahoo", "fred"]
+    assert snapshot.source == TreasuryDataSource.FRED_DGS10
+    assert snapshot.data_status == TreasuryDataStatus.LIVE
+    assert snapshot.used_fallback is False
+    assert "loaded from FRED DGS10" in snapshot.messages[0]
+    assert "Yahoo ^TNX: empty DataFrame" in snapshot.provider_diagnostics
+
+
+def test_yahoo_and_fred_failure_followed_by_treasury_success(
+    monkeypatch: pytest.MonkeyPatch,
+    config: TreasuryHistoryConfig,
+) -> None:
+    official = TreasuryYieldSnapshot(
+        "US_TREASURY_10Y",
+        "2026-07-17",
+        4.55,
+        4.50,
+        4.44,
+        60,
+        source=TreasuryDataSource.US_TREASURY,
+        source_name="U.S. Treasury",
+        fetched_at=datetime(2026, 7, 19, tzinfo=timezone.utc),
+    )
+    monkeypatch.setattr(
+        treasury,
+        "download_treasury_yield_snapshot",
+        lambda loaded_config: (_ for _ in ()).throw(RuntimeError("empty DataFrame")),
+    )
+    monkeypatch.setattr(
+        treasury,
+        "download_fred_treasury_yield_snapshot",
+        lambda loaded_config, now=None: (_ for _ in ()).throw(RuntimeError("fred down")),
+    )
+    monkeypatch.setattr(
+        treasury,
+        "download_us_treasury_yield_snapshot",
+        lambda loaded_config, now=None: official,
+    )
+
+    snapshot = resolve_live_treasury_yield_snapshot(
+        config,
+        now=datetime(2026, 7, 19, tzinfo=timezone.utc),
+    )
+
+    assert snapshot.source == TreasuryDataSource.US_TREASURY
+    assert snapshot.data_status == TreasuryDataStatus.LIVE
+    assert snapshot.used_fallback is False
+    assert "loaded from U.S. Treasury" in snapshot.messages[0]
+
+
+def test_fred_csv_skips_dot_observations(config: TreasuryHistoryConfig) -> None:
+    rows = ["observation_date,DGS10"]
+    for index in range(5):
+        rows.append(f"2026-07-0{index + 1},{'.' if index == 1 else 4.1 + index / 10}")
+
+    snapshot = download_fred_treasury_yield_snapshot_from_text(
+        "\n".join(rows),
+        config,
+    )
+
+    assert snapshot.current_yield_percent == pytest.approx(4.5)
+    assert snapshot.observation_count == 4
+
+
+def test_fred_non_finite_value_raises(
+    monkeypatch: pytest.MonkeyPatch,
+    config: TreasuryHistoryConfig,
+) -> None:
+    monkeypatch.setattr(
+        treasury,
+        "_read_url_text",
+        lambda url, timeout_seconds: "observation_date,DGS10\n2026-07-17,nan\n",
+    )
+
+    with pytest.raises(ValueError, match="finite"):
+        download_fred_treasury_yield_snapshot(config)
+
+
+def test_treasury_missing_10_year_column_raises(
+    monkeypatch: pytest.MonkeyPatch,
+    config: TreasuryHistoryConfig,
+) -> None:
+    monkeypatch.setattr(
+        treasury,
+        "_read_url_text",
+        lambda url, timeout_seconds: '{"data":[{"record_date":"2026-07-17"}]}',
+    )
+
+    with pytest.raises(RuntimeError, match="10-year"):
+        download_us_treasury_yield_snapshot(config)
+
+
+def test_weekend_freshness_accepts_friday_observation(
+    monkeypatch: pytest.MonkeyPatch,
+    config: TreasuryHistoryConfig,
+) -> None:
+    friday = TreasuryYieldSnapshot(
+        "^TNX",
+        "2026-07-17",
+        4.56,
+        4.50,
+        4.45,
+        60,
+        fetched_at=datetime(2026, 7, 19, tzinfo=timezone.utc),
+    )
+    monkeypatch.setattr(
+        treasury,
+        "download_treasury_yield_snapshot",
+        lambda loaded_config: friday,
+    )
+
+    snapshot = resolve_live_treasury_yield_snapshot(
+        config,
+        now=datetime(2026, 7, 19, tzinfo=timezone.utc),
+    )
+
+    assert snapshot.current_yield_percent == pytest.approx(4.56)
+
+
+def test_stale_live_observation_falls_through_to_next_provider(
+    monkeypatch: pytest.MonkeyPatch,
+    config: TreasuryHistoryConfig,
+) -> None:
+    stale = TreasuryYieldSnapshot(
+        "^TNX",
+        "2026-07-10",
+        4.56,
+        4.50,
+        4.45,
+        60,
+        fetched_at=datetime(2026, 7, 19, tzinfo=timezone.utc),
+    )
+    fred = TreasuryYieldSnapshot(
+        "DGS10",
+        "2026-07-17",
+        4.57,
+        4.50,
+        4.45,
+        60,
+        source=TreasuryDataSource.FRED_DGS10,
+        source_name="FRED DGS10",
+    )
+    monkeypatch.setattr(
+        treasury,
+        "download_treasury_yield_snapshot",
+        lambda loaded_config: stale,
+    )
+    monkeypatch.setattr(
+        treasury,
+        "download_fred_treasury_yield_snapshot",
+        lambda loaded_config, now=None: fred,
+    )
+
+    snapshot = resolve_live_treasury_yield_snapshot(
+        config,
+        now=datetime(2026, 7, 19, tzinfo=timezone.utc),
+    )
+
+    assert snapshot.source == TreasuryDataSource.FRED_DGS10
+    assert any("business days old" in item for item in snapshot.provider_diagnostics)
+
+
+def download_fred_treasury_yield_snapshot_from_text(
+    text: str,
+    config: TreasuryHistoryConfig,
+) -> TreasuryYieldSnapshot:
+    original = treasury._read_url_text
+    treasury._read_url_text = lambda url, timeout_seconds: text
+    try:
+        return download_fred_treasury_yield_snapshot(
+            replace(config, long_window_observations=4),
+            now=datetime(2026, 7, 19, tzinfo=timezone.utc),
+        )
+    finally:
+        treasury._read_url_text = original

@@ -89,9 +89,10 @@ from src.yahoo.company import (
 from src.yahoo.prices import download_daily_price_history
 from src.yahoo.treasury import (
     TreasuryDataStatus,
+    TreasuryDataSource,
     TreasuryYieldSnapshot,
     configured_fallback_treasury_snapshot,
-    download_treasury_yield_snapshot,
+    resolve_live_treasury_yield_snapshot,
     unavailable_treasury_snapshot,
 )
 
@@ -480,7 +481,11 @@ def build_resilient_treasury_snapshot(
 ) -> TreasuryYieldSnapshot:
     history_config = configuration.treasury_history
     try:
-        snapshot = download_treasury_yield_snapshot(history_config)
+        snapshot = (
+            resolve_live_treasury_yield_snapshot(history_config)
+            if now is None
+            else resolve_live_treasury_yield_snapshot(history_config, now=now)
+        )
     except (RuntimeError, ValueError) as exc:
         reason = str(exc)
         if history_config.fail_analysis_on_download_error:
@@ -521,7 +526,10 @@ def _cached_treasury_snapshot(
         **{
             **cached.__dict__,
             "data_status": status,
+            "source": TreasuryDataSource.CACHE,
+            "source_name": "Cache",
             "warnings": (warning,),
+            "provider_diagnostics": (*cached.provider_diagnostics, warning),
             "used_fallback": True,
         }
     )

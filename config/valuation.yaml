@@ -2,6 +2,12 @@ macro:
   treasury_yield:
     symbol: "^TNX"
     value_scale: "percent"
+    providers:
+      - yahoo_tnx
+      - fred_dgs10
+      - us_treasury
+    fred_series: "DGS10"
+    max_live_business_days_old: 3
     fallback_yield_percent: 4.30
     max_cached_age_hours: 24
     allow_config_fallback: true

@@ -82,6 +82,7 @@ def test_batch_report_prints_treasury_warning_once() -> None:
         failures=(),
         treasury_status=TreasuryDataStatus.CONFIG_FALLBACK,
         treasury_yield_percent=4.3,
+        treasury_source_name="Configured Fallback",
         treasury_source_date="2026-07-19",
         treasury_trend="NEUTRAL",
         treasury_warning=(
@@ -95,6 +96,8 @@ def test_batch_report_prints_treasury_warning_once() -> None:
     assert report.count("WARNING:") == 1
     assert "Treasury Status" in report
     assert "CONFIG_FALLBACK" in report
+    assert "Treasury Source" in report
+    assert "Configured Fallback" in report
     assert "Treasury Fallback Used  : YES" in report
 
 

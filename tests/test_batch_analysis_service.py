@@ -24,6 +24,7 @@ from src.services.batch_analysis import (
 from src.services.stock_analysis import StockAnalysisServiceError
 from src.yahoo.treasury import (
     TreasuryDataStatus,
+    TreasuryDataSource,
     TreasuryHistoryConfig,
     TreasuryYieldSnapshot,
 )
@@ -216,6 +217,43 @@ def test_five_symbols_continue_with_configured_treasury_fallback(
     assert result.treasury_trend == YieldTrend.NEUTRAL
 
 
+def test_treasury_source_metadata_propagates_to_batch_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configuration = _valuation_configuration()
+    treasury = TreasuryYieldSnapshot(
+        symbol="DGS10",
+        yield_date="2026-07-17",
+        current_yield_percent=4.57,
+        sma_short_percent=4.51,
+        sma_long_percent=4.46,
+        observation_count=60,
+        data_status=TreasuryDataStatus.LIVE,
+        source=TreasuryDataSource.FRED_DGS10,
+        source_name="FRED DGS10",
+        messages=("Yahoo ^TNX was unavailable. Treasury data was loaded from FRED DGS10.",),
+        provider_diagnostics=("Yahoo ^TNX: empty DataFrame", "FRED DGS10: success"),
+    )
+    monkeypatch.setattr(
+        batch_analysis,
+        "build_resilient_treasury_snapshot",
+        lambda config: treasury,
+    )
+    monkeypatch.setattr(
+        batch_analysis,
+        "analyze_stock",
+        lambda symbol, config, treasury_snapshot=None: _analysis_result(symbol),
+    )
+
+    result = analyze_stocks(["A", "B"], configuration)
+
+    assert result.treasury_source == TreasuryDataSource.FRED_DGS10
+    assert result.treasury_source_name == "FRED DGS10"
+    assert result.treasury_message == treasury.messages[0]
+    assert result.treasury_provider_diagnostics == treasury.provider_diagnostics
+    assert result.treasury_used_fallback is False
+
+
 def test_batch_ranking_consumes_completed_results_without_reanalyzing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -329,6 +367,8 @@ def _treasury_snapshot(
         sma_long_percent=4.3,
         observation_count=0,
         data_status=status,
+        source=TreasuryDataSource.CONFIG if status == TreasuryDataStatus.CONFIG_FALLBACK else TreasuryDataSource.YAHOO_TNX,
+        source_name="Configured Fallback" if status == TreasuryDataStatus.CONFIG_FALLBACK else "Yahoo ^TNX",
         warnings=() if warning is None else (warning,),
         used_fallback=status != TreasuryDataStatus.LIVE,
     )

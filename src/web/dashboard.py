@@ -193,16 +193,25 @@ def _macro_status(st: Any, result: Any) -> None:
     if getattr(result, "treasury_status", None) is None:
         return
     st.subheader("Macro Data Status")
-    cols = st.columns(5)
+    cols = st.columns(6)
     cols[0].metric("US 10Y Yield", format_percent(getattr(result, "treasury_yield_percent", None)))
-    cols[1].metric("Source Date", format_text(getattr(result, "treasury_source_date", None)))
-    cols[2].metric("Trend", format_text(getattr(result, "treasury_trend", None)))
-    cols[3].metric("Data Status", format_text(getattr(result, "treasury_status", None)))
+    cols[1].metric("Source", format_text(getattr(result, "treasury_source_name", None)))
+    cols[2].metric("Source Date", format_text(getattr(result, "treasury_source_date", None)))
+    cols[3].metric("Trend", format_text(getattr(result, "treasury_trend", None)))
+    cols[4].metric("Data Status", format_text(getattr(result, "treasury_status", None)))
     fallback = "Yes" if getattr(result, "treasury_used_fallback", False) else "No"
-    cols[4].metric("Fallback Used", fallback)
+    cols[5].metric("Fallback Used", fallback)
     warning = getattr(result, "treasury_warning", None)
     if warning:
         st.warning(warning)
+    message = getattr(result, "treasury_message", None)
+    if message:
+        st.info(message)
+    diagnostics = tuple(getattr(result, "treasury_provider_diagnostics", ()) or ())
+    if diagnostics:
+        with st.expander("Treasury Provider Diagnostics"):
+            for diagnostic in diagnostics:
+                st.caption(diagnostic)
 
 
 def _filters(st: Any, dataframe: pd.DataFrame) -> pd.DataFrame:

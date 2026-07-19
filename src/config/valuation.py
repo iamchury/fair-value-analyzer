@@ -125,6 +125,24 @@ def _build_treasury_history_config(
             "long_window_observations",
             "macro.treasury_yield",
         ),
+        providers=_optional_string_sequence(
+            section,
+            "providers",
+            "macro.treasury_yield",
+            ("yahoo_tnx", "fred_dgs10", "us_treasury"),
+        ),
+        fred_series=_optional_string(
+            section,
+            "fred_series",
+            "macro.treasury_yield",
+            "DGS10",
+        ),
+        max_live_business_days_old=_optional_integer(
+            section,
+            "max_live_business_days_old",
+            "macro.treasury_yield",
+            3,
+        ),
         fallback_yield_percent=_optional_real_number(
             section,
             "fallback_yield_percent",
@@ -358,6 +376,28 @@ def _optional_integer(
     return _require_integer(mapping, key, path)
 
 
+def _optional_string(
+    mapping: Mapping[str, object],
+    key: str,
+    path: str,
+    default: str,
+) -> str:
+    if key not in mapping:
+        return default
+    return _require_string(mapping, key, path)
+
+
+def _optional_string_sequence(
+    mapping: Mapping[str, object],
+    key: str,
+    path: str,
+    default: tuple[str, ...],
+) -> tuple[str, ...]:
+    if key not in mapping:
+        return default
+    return _require_string_sequence(mapping, key, path)
+
+
 def _optional_real_number(
     mapping: Mapping[str, object],
     key: str,
@@ -451,6 +491,9 @@ _TREASURY_REQUIRED_HISTORY_KEYS = {
 }
 
 _TREASURY_FALLBACK_KEYS = {
+    "providers",
+    "fred_series",
+    "max_live_business_days_old",
     "fallback_yield_percent",
     "max_cached_age_hours",
     "allow_config_fallback",

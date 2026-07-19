@@ -54,11 +54,15 @@ def format_batch_stock_analysis_report(
     treasury_warning = getattr(result, "treasury_warning", None)
     if treasury_warning:
         lines.append(f"WARNING: {treasury_warning}")
+    treasury_message = getattr(result, "treasury_message", None)
+    if treasury_message:
+        lines.append(f"INFO: {treasury_message}")
     if getattr(result, "treasury_status", None) is not None:
         lines.extend(
             [
                 _row("Treasury Status", getattr(result, "treasury_status", None)),
                 _row("Treasury Yield", _format_percent(getattr(result, "treasury_yield_percent", None))),
+                _row("Treasury Source", getattr(result, "treasury_source_name", None)),
                 _row("Treasury Source Date", getattr(result, "treasury_source_date", None)),
                 _row("Treasury Trend", getattr(result, "treasury_trend", None)),
                 _row("Treasury Fallback Used", _format_yes_no(getattr(result, "treasury_used_fallback", None))),

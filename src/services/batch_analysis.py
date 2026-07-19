@@ -66,9 +66,13 @@ class BatchStockAnalysisResult:
     ranking_result: StockRankingResult | None = None
     treasury_status: TreasuryDataStatus | None = None
     treasury_yield_percent: float | None = None
+    treasury_source: object | None = None
+    treasury_source_name: str | None = None
     treasury_source_date: str | None = None
     treasury_trend: object | None = None
     treasury_warning: str | None = None
+    treasury_message: str | None = None
+    treasury_provider_diagnostics: tuple[str, ...] = ()
     treasury_used_fallback: bool = False
 
     @property
@@ -580,9 +584,13 @@ def _attach_ranking(
         ranking_result=rank_stocks(result.successful_results, result.failures, configuration),
         treasury_status=result.treasury_status,
         treasury_yield_percent=result.treasury_yield_percent,
+        treasury_source=result.treasury_source,
+        treasury_source_name=result.treasury_source_name,
         treasury_source_date=result.treasury_source_date,
         treasury_trend=result.treasury_trend,
         treasury_warning=result.treasury_warning,
+        treasury_message=result.treasury_message,
+        treasury_provider_diagnostics=result.treasury_provider_diagnostics,
         treasury_used_fallback=result.treasury_used_fallback,
     )
 
@@ -619,9 +627,13 @@ def _treasury_batch_fields(
     return {
         "treasury_status": treasury.data_status,
         "treasury_yield_percent": treasury.current_yield_percent,
+        "treasury_source": treasury.source,
+        "treasury_source_name": treasury.source_name,
         "treasury_source_date": treasury.yield_date,
         "treasury_trend": trend,
         "treasury_warning": None if not treasury.warnings else treasury.warnings[0],
+        "treasury_message": None if not treasury.messages else treasury.messages[0],
+        "treasury_provider_diagnostics": treasury.provider_diagnostics,
         "treasury_used_fallback": treasury.used_fallback,
     }
 

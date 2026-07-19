@@ -248,7 +248,7 @@ def test_analyze_stock_calls_downloads_then_valuation_in_order(
     )
     monkeypatch.setattr(
         stock_analysis,
-        "download_treasury_yield_snapshot",
+        "resolve_live_treasury_yield_snapshot",
         fake_download_treasury,
     )
     monkeypatch.setattr(stock_analysis, "calculate_stock_valuation", fake_calculate)
@@ -280,7 +280,7 @@ def test_analyze_stock_uses_real_pure_valuation_calculation(
     )
     monkeypatch.setattr(
         stock_analysis,
-        "download_treasury_yield_snapshot",
+        "resolve_live_treasury_yield_snapshot",
         lambda config: treasury,
     )
 
@@ -316,7 +316,7 @@ def test_analyze_stock_rejects_missing_current_price_before_treasury_download(
         calls.append("treasury")
         raise AssertionError("Treasury should not be downloaded.")
 
-    monkeypatch.setattr(stock_analysis, "download_treasury_yield_snapshot", fail_treasury)
+    monkeypatch.setattr(stock_analysis, "resolve_live_treasury_yield_snapshot", fail_treasury)
 
     with pytest.raises(
         StockAnalysisServiceError,
@@ -357,7 +357,7 @@ def test_analyze_stock_uses_configured_fallback_when_treasury_download_fails(
 
     monkeypatch.setattr(
         stock_analysis,
-        "download_treasury_yield_snapshot",
+        "resolve_live_treasury_yield_snapshot",
         fail_treasury,
     )
 
@@ -391,7 +391,7 @@ def test_analyze_stock_can_fail_fast_on_treasury_download_error(
 
     monkeypatch.setattr(
         stock_analysis,
-        "download_treasury_yield_snapshot",
+        "resolve_live_treasury_yield_snapshot",
         fail_treasury,
     )
 
@@ -409,8 +409,8 @@ def test_build_resilient_treasury_snapshot_uses_recent_cache(
     stock_analysis._TREASURY_CACHE["^TNX"] = replace(treasury, fetched_at=now)
     monkeypatch.setattr(
         stock_analysis,
-        "download_treasury_yield_snapshot",
-        lambda config: (_ for _ in ()).throw(RuntimeError("network down")),
+        "resolve_live_treasury_yield_snapshot",
+        lambda config, now=None: (_ for _ in ()).throw(RuntimeError("network down")),
     )
 
     snapshot = build_resilient_treasury_snapshot(configuration, now=now)
@@ -434,8 +434,8 @@ def test_build_resilient_treasury_snapshot_marks_stale_cache(
     )
     monkeypatch.setattr(
         stock_analysis,
-        "download_treasury_yield_snapshot",
-        lambda config: (_ for _ in ()).throw(RuntimeError("network down")),
+        "resolve_live_treasury_yield_snapshot",
+        lambda config, now=None: (_ for _ in ()).throw(RuntimeError("network down")),
     )
 
     snapshot = build_resilient_treasury_snapshot(configuration, now=now)
@@ -459,7 +459,7 @@ def test_build_resilient_treasury_snapshot_uses_neutral_fallback_without_configu
     )
     monkeypatch.setattr(
         stock_analysis,
-        "download_treasury_yield_snapshot",
+        "resolve_live_treasury_yield_snapshot",
         lambda config: (_ for _ in ()).throw(RuntimeError("network down")),
     )
 
@@ -489,7 +489,7 @@ def test_analyze_stock_propagates_nested_valuation_config_error(
     )
     monkeypatch.setattr(
         stock_analysis,
-        "download_treasury_yield_snapshot",
+        "resolve_live_treasury_yield_snapshot",
         lambda config: treasury,
     )
 
@@ -597,7 +597,7 @@ def test_analyze_stock_with_profile_downloads_once_and_adds_research_valuation(
     )
     monkeypatch.setattr(
         stock_analysis,
-        "download_treasury_yield_snapshot",
+        "resolve_live_treasury_yield_snapshot",
         fake_download_treasury,
     )
 
@@ -632,7 +632,7 @@ def test_analyze_stock_with_profile_returns_no_research_for_unmatched_symbol(
     )
     monkeypatch.setattr(
         stock_analysis,
-        "download_treasury_yield_snapshot",
+        "resolve_live_treasury_yield_snapshot",
         lambda config: treasury,
     )
 
@@ -776,7 +776,7 @@ def test_eps_selection_changes_fair_value_eps_only(
     )
     monkeypatch.setattr(
         stock_analysis,
-        "download_treasury_yield_snapshot",
+        "resolve_live_treasury_yield_snapshot",
         lambda config: treasury,
     )
 
@@ -885,7 +885,7 @@ def test_analyze_stock_applies_industry_policy_without_extra_downloads(
     )
     monkeypatch.setattr(
         stock_analysis,
-        "download_treasury_yield_snapshot",
+        "resolve_live_treasury_yield_snapshot",
         lambda config: calls.append(("treasury", config)) or treasury,
     )
 
@@ -931,7 +931,7 @@ def test_analyze_stock_adds_analyst_snapshot_without_extra_downloads(
     )
     monkeypatch.setattr(
         stock_analysis,
-        "download_treasury_yield_snapshot",
+        "resolve_live_treasury_yield_snapshot",
         lambda config: calls.append(("treasury", config)) or treasury,
     )
 
@@ -976,7 +976,7 @@ def test_analyze_stock_adds_agreement_from_existing_snapshots(
     )
     monkeypatch.setattr(
         stock_analysis,
-        "download_treasury_yield_snapshot",
+        "resolve_live_treasury_yield_snapshot",
         lambda config: treasury,
     )
 
@@ -1080,7 +1080,7 @@ def test_analyze_stock_adds_momentum_and_range_without_changing_recommendation(
 ) -> None:
     history_calls = []
     monkeypatch.setattr(stock_analysis, "download_company_fundamentals", lambda symbol: company)
-    monkeypatch.setattr(stock_analysis, "download_treasury_yield_snapshot", lambda config: treasury)
+    monkeypatch.setattr(stock_analysis, "resolve_live_treasury_yield_snapshot", lambda config: treasury)
     monkeypatch.setattr(
         stock_analysis,
         "download_daily_price_history",
