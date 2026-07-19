@@ -13,9 +13,11 @@ from src.analysis.ranking_engine import MomentumSentimentPosition, RankingCatego
 from src.analysis.recommendation_v2 import (
     EvidenceQuality,
     MomentumCondition,
+    RecommendationAlignment,
     RecommendationV2Decision,
     ValuationCondition,
 )
+from src.analysis.valuation_decision import ValuationRecommendation
 from src.analysis.valuation_snapshot import (
     ValuationConfidenceLevel,
     ValuationModelType,
@@ -25,20 +27,29 @@ from src.analysis.valuation_snapshot import (
     ValuationValueType,
 )
 from src.web.presentation import (
+    FULL_SUMMARY_METRIC_LABELS,
     RANKING_COLUMNS,
     build_chart_dataframe,
     build_ranking_dataframe,
+    cell_emphasis,
+    collect_warnings,
+    default_selected_symbol,
+    display_label,
     filter_ranking_dataframe,
     format_percent,
     format_price,
     format_text,
     get_ranking_entry,
+    model_evidence_rows,
+    overview_rows,
     parse_ticker_symbols,
     ranking_csv_download,
     ranking_json_download,
     ranking_summary,
     rsi_reference_details,
     rsi_reference_interpretation,
+    top_opportunity_summary,
+    valuation_models_dataframe,
 )
 
 
@@ -119,6 +130,9 @@ def analysis(item):
         base_value=item.base_value,
         optimistic_intrinsic_value=120.0,
         analyst_expectation=110.0,
+        intrinsic_model_count=2,
+        legacy_recommendation=ValuationRecommendation.HOLD,
+        alignment=RecommendationAlignment.V2_MORE_BULLISH,
         rationale=("recommendation rationale",),
         warnings=(),
     )
@@ -188,6 +202,14 @@ def test_formatting_and_unavailable_values() -> None:
     assert format_percent(-3.0, signed=True) == "-3.00%"
     assert format_percent(3.0, signed=True) == "+3.00%"
     assert format_text(None) == "N/A"
+    assert format_text("MU") == "MU"
+
+
+def test_display_label_conversion_keeps_domain_values_out_of_ui() -> None:
+    assert display_label(RecommendationV2Decision.INSUFFICIENT_DATA) == "Insufficient Data"
+    assert display_label(ValuationCondition.NEAR_FAIR_VALUE) == "Near Fair Value"
+    assert display_label(ValuationCondition.SIGNIFICANTLY_OVERVALUED) == "Significantly Overvalued"
+    assert display_label("MU") == "MU"
 
 
 def test_filters_are_display_only_and_preserve_remaining_order() -> None:
@@ -211,6 +233,7 @@ def test_rsi50_mapping_and_existing_interpretation_are_exposed() -> None:
 
     assert details["RSI50 Reference Price"] == "76.00"
     assert details["Current vs RSI50 %"] == "+0.00%"
+    assert details["Current vs Reference Amount"] == "+4.00"
     assert "neutral-reference price" in interpretation[0]
 
 
@@ -239,8 +262,9 @@ def test_chart_dataframe_contains_distinct_value_concepts() -> None:
         "Base Intrinsic Value",
         "Optimistic Intrinsic Value",
         "Analyst Market Expectation",
-        "RSI50 Reference Price",
+        "RSI50 Momentum Reference",
     }
+    assert {"Intrinsic", "Market Expectation", "Technical Reference"} <= set(chart["Category"])
 
 
 def test_csv_and_json_download_generation_include_rsi50_fields() -> None:
@@ -259,3 +283,112 @@ def test_get_ranking_entry_returns_selected_symbol() -> None:
     batch = result([entry("LITE", 1, 70), entry("MU", 2, 50)])
 
     assert get_ranking_entry(batch, "mu").symbol == "MU"
+
+
+def test_top_eligible_opportunity_presentation_mapping() -> None:
+    batch = result([entry("LITE", 1, 70)])
+
+    summary = top_opportunity_summary(batch)
+
+    assert summary["Symbol"] == "LITE"
+    assert summary["Recommendation V2"] == "Buy"
+    assert summary["Ranking Category"] == "Attractive"
+    assert summary["Ranking Score"] == "70.00"
+    assert summary["Current vs RSI50 Reference %"] == "+0.00%"
+
+
+def test_no_eligible_opportunity_state() -> None:
+    batch = result([entry("NVDA", 1, 65, eligible=False)])
+
+    assert top_opportunity_summary(batch) is None
+    assert default_selected_symbol(batch) == "NVDA"
+
+
+def test_full_metric_labels_are_explicit() -> None:
+    assert FULL_SUMMARY_METRIC_LABELS == (
+        "Top Eligible Symbol",
+        "Top Ranking Score",
+        "Eligible Symbols",
+        "Insufficient Symbols",
+        "Above RSI50",
+        "Near RSI50",
+        "Below RSI50",
+        "Successful / Failed",
+    )
+
+
+def test_conditional_style_classification() -> None:
+    assert cell_emphasis("Buy") == "positive"
+    assert cell_emphasis("Hold") == "neutral"
+    assert cell_emphasis("Sell") == "negative"
+    assert cell_emphasis("Insufficient Data") == "muted"
+
+
+def test_selected_symbol_default_uses_top_then_first_successful() -> None:
+    assert default_selected_symbol(result([entry("LITE", 1, 70), entry("MU", 2, 50)])) == "LITE"
+    assert default_selected_symbol(result([entry("NVDA", 1, 20, eligible=False)])) == "NVDA"
+
+
+def test_overview_rows_include_required_detail_fields() -> None:
+    batch = result([entry("MU", 1, 70)])
+
+    rows = overview_rows(get_ranking_entry(batch, "MU"), batch.successful_results[0])
+
+    assert rows["Company Name"] == "MU Corp"
+    assert rows["Recommendation V2"] == "Buy"
+    assert rows["RSI50 Reference Price"] == "76.00"
+
+
+def test_valuation_table_keeps_analyst_consensus_as_market_expectation() -> None:
+    item = entry("MU", 1, 70)
+    stock = analysis(item)
+    automatic = stock.valuation_snapshots.snapshots[0]
+    analyst = ValuationSnapshot(
+        symbol="MU",
+        model_type=ValuationModelType.ANALYST_CONSENSUS,
+        model_name="Analyst Consensus",
+        value_type=ValuationValueType.MARKET_EXPECTATION,
+        status=ValuationSnapshotStatus.COMPLETE,
+        confidence=ValuationConfidenceLevel.LOW,
+        raw_fair_value=110.0,
+        adjusted_fair_value=110.0,
+        selected_fair_value=110.0,
+        currency="USD",
+        valuation_date=None,
+        source_as_of=None,
+        generated_at=NOW,
+        methodology="Weighted Mean / Midpoint",
+        rationale=None,
+        assumptions={},
+        metrics={},
+        warnings=("Analyst target dispersion is extreme.",),
+        calculation_steps=(),
+    )
+    stock.valuation_snapshots = ValuationSnapshotCollection("MU", (automatic, analyst), NOW)
+
+    dataframe = valuation_models_dataframe(stock)
+    row = dataframe[dataframe["Model"] == "Analyst Consensus"].iloc[0]
+
+    assert row["Value Type"] == "Market Expectation"
+    assert row["Included in Intrinsic Range"] == "No - Market Expectation"
+    assert "Market expectation" in row["Notes"]
+
+
+def test_model_evidence_rows_show_required_minimum_and_counts() -> None:
+    rows = model_evidence_rows(analysis(entry("MU", 1, 70)), required_minimum=2)
+
+    assert rows["Intrinsic Model Count"] == "2"
+    assert rows["Required Minimum Model Count"] == "2"
+
+
+def test_warning_deduplication_preserves_first_occurrence() -> None:
+    batch = result([entry("MU", 1, 70)])
+    item = get_ranking_entry(batch, "MU")
+    item.warnings = ("Momentum is missing.", "Momentum is missing.")
+    stock = batch.successful_results[0]
+    stock.recommendation_v2.warnings = ("Momentum is missing.", "Fair value range is partial.")
+
+    assert collect_warnings(batch, item, stock)[:2] == (
+        "Momentum is missing.",
+        "Fair value range is partial.",
+    )

@@ -1,23 +1,32 @@
 from __future__ import annotations
 
-from enum import Enum
+from datetime import datetime, timezone
 from typing import Any
 
 import pandas as pd
 import streamlit as streamlit_module
 
 from src.services.batch_analysis import analyze_symbol_list_with_profiles_from_config_files
+from src.config.recommendation_v2 import load_recommendation_v2_configuration
 from src.web.presentation import (
     DEFAULT_SYMBOL_TEXT,
     DEFAULT_WEB_CONFIG,
+    FULL_SUMMARY_METRIC_LABELS,
     WebConfigPaths,
     build_chart_dataframe,
     build_ranking_dataframe,
+    collect_warnings,
+    default_selected_symbol,
     filter_ranking_dataframe,
     format_number,
     format_percent,
     format_price,
     format_text,
+    model_evidence_rows,
+    outliers_dataframe,
+    overview_interpretation,
+    overview_rows,
+    pairwise_agreement_dataframe,
     get_ranking_entry,
     get_successful_result,
     parse_ticker_symbols,
@@ -26,6 +35,10 @@ from src.web.presentation import (
     ranking_summary,
     rsi_reference_details,
     rsi_reference_interpretation,
+    style_ranking_dataframe,
+    successful_symbols,
+    top_opportunity_summary,
+    valuation_models_dataframe,
 )
 
 
@@ -48,9 +61,23 @@ def analyze_symbols(
     )
 
 
-@streamlit_module.cache_data(ttl=900, show_spinner=False)
-def cached_analyze_symbols(symbols: tuple[str, ...]) -> Any:
-    return analyze_symbols(symbols)
+def analyze_symbols_for_dashboard(symbols: tuple[str, ...]) -> Any:
+    return analyze_symbols(symbols, get_dashboard_config())
+
+
+@streamlit_module.cache_resource(show_spinner=False)
+def get_dashboard_config() -> WebConfigPaths:
+    return DEFAULT_WEB_CONFIG
+
+
+@streamlit_module.cache_resource(show_spinner=False)
+def get_required_minimum_intrinsic_models() -> int | None:
+    try:
+        return load_recommendation_v2_configuration(
+            get_dashboard_config().recommendation_v2_config_path
+        ).minimum_intrinsic_models
+    except Exception:
+        return None
 
 
 def run() -> None:
@@ -58,19 +85,23 @@ def run() -> None:
 
     st.set_page_config(page_title="Fair Value Analyzer", layout="wide")
     st.title("Fair Value Analyzer")
-    st.caption("Valuation, Recommendation V2, ranking, and RSI 50 momentum reference dashboard.")
+    st.caption("Valuation, Recommendation V2, ranking, and RSI50 momentum reference dashboard.")
 
     with st.sidebar:
         st.header("Analysis")
         raw_symbols = st.text_area("Tickers", value=DEFAULT_SYMBOL_TEXT, height=130)
-        analyze = st.button("Analyze", type="primary", use_container_width=True)
+        analyze = st.button("Analyze", type="primary", width="stretch")
         st.caption("Maximum 20 tickers. Input accepts commas, spaces, or new lines.")
 
     if analyze:
         _run_analysis(st, raw_symbols)
 
-    result = st.session_state.get("latest_result")
+    result = st.session_state.get("analysis_result")
     if result is None:
+        if st.session_state.get("analysis_error"):
+            st.error("Analysis failed.")
+            with st.expander("Technical details"):
+                st.write(st.session_state["analysis_error"])
         st.info("Enter tickers and click Analyze.")
         _disclaimer(st)
         return
@@ -88,12 +119,15 @@ def _run_analysis(st: Any, raw_symbols: str) -> None:
     progress = st.progress(0, text="Loading configuration")
     try:
         progress.progress(20, text="Downloading Yahoo and Treasury data")
-        result = cached_analyze_symbols(symbols)
+        result = analyze_symbols_for_dashboard(symbols)
         progress.progress(75, text="Building ranking and RSI 50 reference views")
-        st.session_state["latest_result"] = result
-        st.session_state["latest_symbols"] = symbols
+        st.session_state["analysis_result"] = result
+        st.session_state["analysis_symbols"] = symbols
+        st.session_state["analysis_generated_at"] = datetime.now(timezone.utc)
+        st.session_state["analysis_error"] = None
         progress.progress(100, text="Analysis complete")
     except Exception as exc:
+        st.session_state["analysis_error"] = str(exc)
         st.error("Analysis failed. Expand technical details for more information.")
         with st.expander("Technical details"):
             st.exception(exc)
@@ -105,32 +139,53 @@ def _render_dashboard(st: Any, result: Any) -> None:
     _summary_metrics(st, result)
     _failure_expander(st, result)
     table = build_ranking_dataframe(result)
+    _top_opportunity(st, result)
     filtered = _filters(st, table)
     st.subheader("Multi-Stock Ranking")
-    st.dataframe(filtered, hide_index=True, use_container_width=True)
+    st.dataframe(style_ranking_dataframe(filtered), hide_index=True, width="stretch")
     _downloads(st, result)
-    symbols = [row["Symbol"] for row in table.to_dict("records")]
+    symbols = list(successful_symbols(result))
     if not symbols:
-        st.warning("No ranked symbols are available.")
+        st.warning("No successfully analyzed symbols are available.")
         return
-    selected = st.selectbox("Selected Symbol", symbols)
+    default_symbol = default_selected_symbol(result)
+    default_index = symbols.index(default_symbol) if default_symbol in symbols else 0
+    st.subheader("Stock Detail")
+    selected = st.selectbox("Selected Symbol", symbols, index=default_index)
     entry = get_ranking_entry(result, selected)
     analysis = get_successful_result(result, selected)
     _valuation_chart(st, result, selected)
-    if entry is not None:
-        _rsi_section(st, entry)
-    _detail_tabs(st, entry, analysis)
+    _detail_tabs(st, result, entry, analysis)
 
 
 def _summary_metrics(st: Any, result: Any) -> None:
     summary = ranking_summary(result)
-    cells = st.columns(6)
-    cells[0].metric("Top Eligible Symbol", format_text(summary["top_symbol"]))
-    cells[1].metric("Top Score", format_number(summary["top_score"]))
-    cells[2].metric("Eligible Symbols", summary["eligible_count"])
-    cells[3].metric("Insufficient Symbols", summary["insufficient_count"])
-    cells[4].metric("Above/Near/Below RSI50", f"{summary['above_rsi50']} / {summary['near_rsi50']} / {summary['below_rsi50']}")
-    cells[5].metric("Successful / Failed", f"{result.success_count} / {result.failure_count}")
+    first = st.columns(4)
+    first[0].metric(FULL_SUMMARY_METRIC_LABELS[0], format_text(summary["top_symbol"]))
+    first[1].metric(FULL_SUMMARY_METRIC_LABELS[1], format_number(summary["top_score"]))
+    first[2].metric(FULL_SUMMARY_METRIC_LABELS[2], summary["eligible_count"])
+    first[3].metric(FULL_SUMMARY_METRIC_LABELS[3], summary["insufficient_count"])
+    second = st.columns(4)
+    second[0].metric(FULL_SUMMARY_METRIC_LABELS[4], summary["above_rsi50"])
+    second[1].metric(FULL_SUMMARY_METRIC_LABELS[5], summary["near_rsi50"])
+    second[2].metric(FULL_SUMMARY_METRIC_LABELS[6], summary["below_rsi50"])
+    second[3].metric(FULL_SUMMARY_METRIC_LABELS[7], f"{result.success_count} / {result.failure_count}")
+
+
+def _top_opportunity(st: Any, result: Any) -> None:
+    st.subheader("Top Eligible Opportunity")
+    summary = top_opportunity_summary(result)
+    st.caption(
+        "Top Eligible Opportunity identifies the highest-ranked eligible stock in the current comparison set. It does not override the stock's Recommendation V2 decision."
+    )
+    if summary is None:
+        st.info("No eligible opportunity")
+        return
+    items = list(summary.items())
+    for offset in range(0, len(items), 4):
+        cols = st.columns(4)
+        for index, (label, value) in enumerate(items[offset : offset + 4]):
+            cols[index].metric(label, value)
 
 
 def _filters(st: Any, dataframe: pd.DataFrame) -> pd.DataFrame:
@@ -155,25 +210,28 @@ def _downloads(st: Any, result: Any) -> None:
         ranking_csv_download(result),
         file_name="ranking.csv",
         mime="text/csv",
-        use_container_width=True,
+        width="stretch",
     )
     right.download_button(
         "Download Ranking JSON",
         ranking_json_download(result),
         file_name="ranking.json",
         mime="application/json",
-        use_container_width=True,
+        width="stretch",
     )
 
 
 def _valuation_chart(st: Any, result: Any, symbol: str) -> None:
-    st.subheader("Selected Symbol Value Comparison")
+    st.subheader("Valuation Comparison")
     chart = build_chart_dataframe(result, symbol)
     if chart.empty:
         st.info("No comparable values are available for this symbol.")
         return
     st.bar_chart(chart.set_index("Measure")["Value"])
-    st.dataframe(chart, hide_index=True, use_container_width=True)
+    st.caption(
+        "Analyst consensus is a market-expectation measure. RSI50 reference is a technical momentum level. Neither is included as an intrinsic-value average."
+    )
+    st.dataframe(chart, hide_index=True, width="stretch")
 
 
 def _rsi_section(st: Any, entry: Any) -> None:
@@ -189,7 +247,7 @@ def _rsi_section(st: Any, entry: Any) -> None:
         st.write(line)
 
 
-def _detail_tabs(st: Any, entry: Any, analysis: Any) -> None:
+def _detail_tabs(st: Any, result: Any, entry: Any, analysis: Any) -> None:
     overview, valuation, recommendation, rsi, evidence, warnings = st.tabs(
         ["Overview", "Valuation", "Recommendation", "RSI50 Momentum", "Model Evidence", "Warnings"]
     )
@@ -203,45 +261,31 @@ def _detail_tabs(st: Any, entry: Any, analysis: Any) -> None:
         if entry is None:
             st.info("No RSI 50 reference is available.")
         else:
+            st.caption(
+                "The RSI50 reference price is the price associated with the latest neutral-line transition or configured fallback. It is a technical momentum and sentiment reference, not intrinsic value, guaranteed support, or investor average cost."
+            )
             st.table(pd.DataFrame(rsi_reference_details(entry).items(), columns=["Field", "Value"]))
+            for line in rsi_reference_interpretation(entry):
+                st.write(line)
     with evidence:
         _evidence_tab(st, analysis)
     with warnings:
-        _warnings_tab(st, entry, analysis)
+        _warnings_tab(st, result, entry, analysis)
 
 
 def _overview_tab(st: Any, entry: Any, analysis: Any) -> None:
-    company = getattr(analysis, "company", None)
-    recommendation = getattr(analysis, "recommendation_v2", None)
-    rows = {
-        "Symbol": format_text(getattr(entry, "symbol", None)),
-        "Company": format_text(getattr(company, "company_name", None)),
-        "Current Price": format_price(getattr(entry, "current_price", None), getattr(company, "currency", None)),
-        "Rank": format_text(getattr(entry, "rank", None)),
-        "Category": format_text(getattr(entry, "category", None)),
-        "Recommendation V2": format_text(getattr(recommendation, "decision", None)),
-    }
+    rows = overview_rows(entry, analysis)
     st.table(pd.DataFrame(rows.items(), columns=["Field", "Value"]))
+    for line in overview_interpretation(entry, analysis):
+        st.write(line)
 
 
 def _valuation_tab(st: Any, analysis: Any) -> None:
-    collection = getattr(analysis, "valuation_snapshots", None)
-    snapshots = tuple(getattr(collection, "snapshots", ()) or ())
-    if not snapshots:
+    dataframe = valuation_models_dataframe(analysis)
+    if dataframe.empty:
         st.info("No valuation snapshots are available.")
         return
-    rows = [
-        {
-            "Model": format_text(snapshot.model_type),
-            "Value Type": format_text(snapshot.value_type),
-            "Selected Value": format_price(snapshot.selected_fair_value, snapshot.currency),
-            "Status": format_text(snapshot.status),
-            "Confidence": format_text(snapshot.confidence),
-            "Methodology": format_text(snapshot.methodology),
-        }
-        for snapshot in snapshots
-    ]
-    st.dataframe(pd.DataFrame(rows), hide_index=True, use_container_width=True)
+    st.dataframe(dataframe, hide_index=True, width="stretch")
 
 
 def _recommendation_tab(st: Any, analysis: Any) -> None:
@@ -250,40 +294,46 @@ def _recommendation_tab(st: Any, analysis: Any) -> None:
         st.info("Recommendation V2 is unavailable.")
         return
     metrics = {
-        "Decision": format_text(recommendation.decision),
-        "Valuation": format_text(recommendation.valuation_condition),
-        "Evidence": format_text(recommendation.evidence_quality),
-        "Momentum": format_text(recommendation.momentum_condition),
+        "Recommendation V2 Decision": format_text(recommendation.decision),
+        "Valuation Condition": format_text(recommendation.valuation_condition),
+        "Momentum Condition": format_text(recommendation.momentum_condition),
+        "Evidence Quality": format_text(recommendation.evidence_quality),
+        "Legacy Recommendation": format_text(getattr(recommendation, "legacy_recommendation", None)),
+        "Alignment Status": format_text(getattr(recommendation, "alignment", None)),
         "Current vs Base": format_percent(recommendation.current_vs_base_pct, signed=True),
     }
     st.table(pd.DataFrame(metrics.items(), columns=["Field", "Value"]))
+    if format_text(getattr(recommendation, "alignment", None)) in {"V2 More Bullish", "V2 More Bearish"}:
+        st.warning("Legacy recommendation and Recommendation V2 diverge.")
     for line in recommendation.rationale:
         st.write(line)
+    for warning in getattr(recommendation, "warnings", ()) or ():
+        st.warning(warning)
 
 
 def _evidence_tab(st: Any, analysis: Any) -> None:
-    agreement = getattr(analysis, "agreement_result", None)
-    fair_range = getattr(analysis, "fair_value_range", None)
-    rows = {
-        "Core Agreement": format_text(getattr(agreement, "core_intrinsic_agreement", None)),
-        "Extended Agreement": format_text(getattr(agreement, "extended_intrinsic_agreement", None)),
-        "Overall Agreement": format_text(getattr(agreement, "overall_agreement", None)),
-        "Conservative Value": format_price(getattr(fair_range, "conservative_value", None)),
-        "Base Value": format_price(getattr(fair_range, "base_value", None)),
-        "Optimistic Value": format_price(getattr(fair_range, "optimistic_intrinsic_value", None)),
-    }
+    rows = model_evidence_rows(analysis, get_required_minimum_intrinsic_models())
     st.table(pd.DataFrame(rows.items(), columns=["Field", "Value"]))
+    pairwise = pairwise_agreement_dataframe(analysis)
+    if not pairwise.empty:
+        st.write("Pairwise Agreement")
+        st.dataframe(pairwise, hide_index=True, width="stretch")
+    outliers = outliers_dataframe(analysis)
+    if not outliers.empty:
+        st.write("Identified Outliers")
+        st.dataframe(outliers, hide_index=True, width="stretch")
+    snapshots = valuation_models_dataframe(analysis)
+    if not snapshots.empty:
+        st.write("Included / Excluded Evidence")
+        st.dataframe(snapshots, hide_index=True, width="stretch")
 
 
-def _warnings_tab(st: Any, entry: Any, analysis: Any) -> None:
-    warnings: list[str] = []
-    warnings.extend(str(item) for item in getattr(entry, "warnings", ()) or ())
-    recommendation = getattr(analysis, "recommendation_v2", None)
-    warnings.extend(str(item) for item in getattr(recommendation, "warnings", ()) or ())
+def _warnings_tab(st: Any, result: Any, entry: Any, analysis: Any) -> None:
+    warnings = collect_warnings(result, entry, analysis)
     if not warnings:
-        st.success("No warnings for this symbol.")
+        st.success("No material analysis warnings.")
         return
-    for warning in dict.fromkeys(warnings):
+    for warning in warnings:
         st.warning(warning)
 
 
@@ -299,7 +349,3 @@ def _failure_expander(st: Any, result: Any) -> None:
 
 def _disclaimer(st: Any) -> None:
     st.caption("For research and education only. This is not investment advice.")
-
-
-def _text(value: Any) -> str:
-    return value.value if isinstance(value, Enum) else str(value)
