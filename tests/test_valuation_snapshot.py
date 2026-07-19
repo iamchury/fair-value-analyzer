@@ -27,6 +27,7 @@ from src.analysis.valuation_snapshot import (
 from src.config.valuation_profiles import ValuationProfile, ValuationStyle
 from src.services.stock_analysis import StockAnalysisWithProfileResult
 from tests.test_text_report import (
+    analyst_result,
     company,
     fair_value,
     research_profile_result,
@@ -296,6 +297,15 @@ def test_collection_builder_omits_unavailable_optional_models() -> None:
         ValuationModelType.AUTOMATIC_PER,
         ValuationModelType.RESEARCH_PER,
         ValuationModelType.DCF_REFERENCE,
+    ]
+
+    with_analyst = build_valuation_snapshot_collection(
+        service_result(analyst_consensus=analyst_result()),
+        GENERATED_AT,
+    )
+    assert [item.model_type for item in with_analyst.snapshots] == [
+        ValuationModelType.AUTOMATIC_PER,
+        ValuationModelType.ANALYST_CONSENSUS,
     ]
 
 

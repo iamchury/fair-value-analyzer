@@ -1,0 +1,21 @@
+defaults:
+  enabled: true
+  include_reference_values: true
+  include_low_confidence_intrinsic: true
+  exclude_outliers: true
+  base_method: confidence_weighted_median
+  conservative_method: lower_support
+  optimistic_method: upper_intrinsic_support
+  high_confidence_weight: 1.0
+  medium_confidence_weight: 0.75
+  low_confidence_weight: 0.5
+  unknown_confidence_weight: 0.25
+  minimum_intrinsic_models: 2
+  reference_value_weight: 0.5
+  market_expectation_in_intrinsic_range: false
+  show_market_expectation_separately: true
+  show_momentum_reference_separately: true
+  deep_undervalued_pct: -30
+  undervalued_pct: -10
+  near_fair_upper_pct: 10
+  above_fair_pct: 20

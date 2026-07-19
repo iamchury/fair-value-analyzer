@@ -4,7 +4,7 @@ import pytest
 
 from src.config.analyst_consensus import (
     AnalystConsensusConfigurationError,
-    AnalystFairValueMethod,
+    AnalystValuationMethod,
     load_analyst_consensus_configuration,
     parse_analyst_consensus_configuration,
 )
@@ -14,14 +14,13 @@ def document(**overrides):
     data = {
         "defaults": {
             "enabled": True,
-            "fair_value_method": "weighted_mean_midpoint",
+            "valuation_method": "weighted_mean_midpoint",
             "mean_weight": 0.7,
             "midpoint_weight": 0.3,
-            "apply_treasury_multiplier": False,
-            "low_dispersion_threshold_percent": 25.0,
-            "medium_dispersion_threshold_percent": 60.0,
-            "extreme_dispersion_threshold_percent": 100.0,
-            "stale_after_days": 180,
+            "apply_treasury": False,
+            "low_dispersion": 25.0,
+            "medium_dispersion": 60.0,
+            "high_dispersion": 100.0,
         },
         "symbols": {"mu": {"rationale": " wide "}},
     }
@@ -32,7 +31,7 @@ def document(**overrides):
 def test_repository_yaml_loads_and_symbol_inherits_defaults() -> None:
     config = load_analyst_consensus_configuration()
 
-    assert config.default_rule.fair_value_method == AnalystFairValueMethod.WEIGHTED_MEAN_MIDPOINT
+    assert config.default_rule.valuation_method == AnalystValuationMethod.WEIGHTED_MEAN_MIDPOINT
     assert config.symbol_rules["MU"].mean_weight == 0.7
     assert config.symbol_rules["MU"].rationale == "Treat the wide analyst target range conservatively."
     with pytest.raises(TypeError):
@@ -42,7 +41,7 @@ def test_repository_yaml_loads_and_symbol_inherits_defaults() -> None:
 @pytest.mark.parametrize("method", ["mean", "midpoint", "weighted_mean_midpoint"])
 def test_all_methods_load(method: str) -> None:
     data = document()
-    data["defaults"]["fair_value_method"] = method
+    data["defaults"]["valuation_method"] = method
     assert parse_analyst_consensus_configuration(data).default_rule
 
 
@@ -62,18 +61,16 @@ def test_invalid_documents_raise(bad) -> None:
 @pytest.mark.parametrize(
     ("key", "value"),
     [
-        ("fair_value_method", "median"),
+        ("valuation_method", "median"),
         ("enabled", 1),
         ("mean_weight", True),
         ("mean_weight", -0.1),
         ("mean_weight", 1.1),
         ("mean_weight", nan),
         ("mean_weight", inf),
-        ("low_dispersion_threshold_percent", 0.0),
-        ("medium_dispersion_threshold_percent", 10.0),
-        ("extreme_dispersion_threshold_percent", 1001.0),
-        ("stale_after_days", True),
-        ("stale_after_days", 0),
+        ("low_dispersion", 0.0),
+        ("medium_dispersion", 10.0),
+        ("high_dispersion", 1001.0),
     ],
 )
 def test_invalid_default_values_raise(key, value) -> None:

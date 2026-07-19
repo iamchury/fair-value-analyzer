@@ -1,0 +1,10 @@
+defaults:
+  enabled: true
+  strong_threshold_pct: 10
+  moderate_threshold_pct: 20
+  weak_threshold_pct: 35
+  outlier_threshold_pct: 50
+  extreme_outlier_threshold_pct: 80
+  minimum_primary_models: 2
+  include_reference_in_intrinsic_cluster: true
+  market_expectation_affects_overall_agreement: false

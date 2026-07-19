@@ -11,6 +11,27 @@ from src.config.analyst_consensus import (
     AnalystConsensusConfiguration,
     load_analyst_consensus_configuration,
 )
+from src.config.agreement_engine import (
+    AgreementEngineConfiguration,
+    load_agreement_engine_configuration,
+)
+from src.config.fair_value_range import (
+    FairValueRangeConfiguration,
+    load_fair_value_range_configuration,
+)
+from src.config.recommendation_v2 import (
+    RecommendationV2Configuration,
+    load_recommendation_v2_configuration,
+)
+from src.analysis.ranking_engine import StockRankingResult, rank_stocks
+from src.config.ranking_engine import (
+    RankingEngineConfiguration,
+    load_ranking_engine_configuration,
+)
+from src.config.momentum_reference import (
+    MomentumReferenceConfiguration,
+    load_momentum_reference_configuration,
+)
 from src.config.industry_policies import (
     IndustryPolicyConfiguration,
     load_industry_policy_configuration,
@@ -40,6 +61,7 @@ class BatchStockAnalysisResult:
     requested_symbols: tuple[str, ...]
     successful_results: tuple[StockAnalysisServiceResult, ...]
     failures: tuple[StockAnalysisFailure, ...]
+    ranking_result: StockRankingResult | None = None
 
     @property
     def success_count(self) -> int:
@@ -60,6 +82,11 @@ def analyze_stocks(
     eps_selection_config: EPSSelectionConfiguration | None = None,
     industry_policy_config: IndustryPolicyConfiguration | None = None,
     analyst_consensus_config: AnalystConsensusConfiguration | None = None,
+    agreement_config: AgreementEngineConfiguration | None = None,
+    momentum_config: MomentumReferenceConfiguration | None = None,
+    range_config: FairValueRangeConfiguration | None = None,
+    recommendation_v2_config: RecommendationV2Configuration | None = None,
+    ranking_config: RankingEngineConfiguration | None = None,
 ) -> BatchStockAnalysisResult:
     """Analyze stock symbols sequentially and retain per-symbol failures."""
     requested_symbols = _normalize_requested_symbols(symbols)
@@ -68,18 +95,31 @@ def analyze_stocks(
 
     for symbol in requested_symbols:
         try:
-            if eps_selection_config is None and industry_policy_config is None and analyst_consensus_config is None:
+            if (
+                eps_selection_config is None
+                and industry_policy_config is None
+                and analyst_consensus_config is None
+                and agreement_config is None
+                and momentum_config is None
+                and range_config is None
+                and recommendation_v2_config is None
+            ):
                 successful_results.append(analyze_stock(symbol, configuration))
             else:
-                successful_results.append(
-                    analyze_stock(
-                        symbol,
-                        configuration,
-                        eps_selection_config,
-                        industry_policy_config,
-                        analyst_consensus_config,
-                    )
+                args = (
+                    symbol,
+                    configuration,
+                    eps_selection_config,
+                    industry_policy_config,
+                    analyst_consensus_config,
+                    agreement_config,
+                    momentum_config,
+                    range_config,
                 )
+                if recommendation_v2_config is None:
+                    successful_results.append(analyze_stock(*args))
+                else:
+                    successful_results.append(analyze_stock(*args, recommendation_v2_config))
         except (StockAnalysisServiceError, ValueError, RuntimeError) as exc:
             failures.append(
                 StockAnalysisFailure(
@@ -89,11 +129,12 @@ def analyze_stocks(
                 )
             )
 
-    return BatchStockAnalysisResult(
+    result = BatchStockAnalysisResult(
         requested_symbols=requested_symbols,
         successful_results=tuple(successful_results),
         failures=tuple(failures),
     )
+    return _attach_ranking(result, ranking_config)
 
 
 def analyze_stocks_with_profiles(
@@ -103,6 +144,11 @@ def analyze_stocks_with_profiles(
     eps_selection_config: EPSSelectionConfiguration | None = None,
     industry_policy_config: IndustryPolicyConfiguration | None = None,
     analyst_consensus_config: AnalystConsensusConfiguration | None = None,
+    agreement_config: AgreementEngineConfiguration | None = None,
+    momentum_config: MomentumReferenceConfiguration | None = None,
+    range_config: FairValueRangeConfiguration | None = None,
+    recommendation_v2_config: RecommendationV2Configuration | None = None,
+    ranking_config: RankingEngineConfiguration | None = None,
 ) -> BatchStockAnalysisResult:
     """Analyze stock symbols sequentially using preloaded valuation profiles."""
     requested_symbols = _normalize_requested_symbols(symbols)
@@ -111,21 +157,34 @@ def analyze_stocks_with_profiles(
 
     for symbol in requested_symbols:
         try:
-            if eps_selection_config is None and industry_policy_config is None and analyst_consensus_config is None:
+            if (
+                eps_selection_config is None
+                and industry_policy_config is None
+                and analyst_consensus_config is None
+                and agreement_config is None
+                and momentum_config is None
+                and range_config is None
+                and recommendation_v2_config is None
+            ):
                 successful_results.append(
                     analyze_stock_with_profile(symbol, configuration, profiles)
                 )
             else:
-                successful_results.append(
-                    analyze_stock_with_profile(
-                        symbol,
-                        configuration,
-                        profiles,
-                        eps_selection_config,
-                        industry_policy_config,
-                        analyst_consensus_config,
-                    )
+                args = (
+                    symbol,
+                    configuration,
+                    profiles,
+                    eps_selection_config,
+                    industry_policy_config,
+                    analyst_consensus_config,
+                    agreement_config,
+                    momentum_config,
+                    range_config,
                 )
+                if recommendation_v2_config is None:
+                    successful_results.append(analyze_stock_with_profile(*args))
+                else:
+                    successful_results.append(analyze_stock_with_profile(*args, recommendation_v2_config))
         except (StockAnalysisServiceError, ValueError, RuntimeError) as exc:
             failures.append(
                 StockAnalysisFailure(
@@ -135,11 +194,12 @@ def analyze_stocks_with_profiles(
                 )
             )
 
-    return BatchStockAnalysisResult(
+    result = BatchStockAnalysisResult(
         requested_symbols=requested_symbols,
         successful_results=tuple(successful_results),
         failures=tuple(failures),
     )
+    return _attach_ranking(result, ranking_config)
 
 
 def analyze_stocks_from_config_files(
@@ -148,6 +208,11 @@ def analyze_stocks_from_config_files(
     eps_selection_path: str | Path | None = None,
     industry_policies_path: str | Path | None = None,
     analyst_consensus_path: str | Path | None = None,
+    agreement_config_path: str | Path | None = None,
+    momentum_config_path: str | Path | None = None,
+    range_config_path: str | Path | None = None,
+    recommendation_v2_config_path: str | Path | None = None,
+    ranking_config_path: str | Path | None = None,
 ) -> BatchStockAnalysisResult:
     """Load configuration files once, then run sequential batch analysis."""
     valuation_configuration = load_valuation_configuration(valuation_config_path)
@@ -167,20 +232,82 @@ def analyze_stocks_from_config_files(
         if analyst_consensus_path is None
         else load_analyst_consensus_configuration(analyst_consensus_path)
     )
-    if eps_selection_config is None and industry_policy_config is None and analyst_consensus_config is None:
+    agreement_config = (
+        None
+        if agreement_config_path is None
+        else load_agreement_engine_configuration(agreement_config_path)
+    )
+    momentum_config = (
+        None
+        if momentum_config_path is None
+        else load_momentum_reference_configuration(momentum_config_path)
+    )
+    range_config = (
+        None
+        if range_config_path is None
+        else load_fair_value_range_configuration(range_config_path)
+    )
+    recommendation_v2_config = (
+        None
+        if recommendation_v2_config_path is None
+        else load_recommendation_v2_configuration(recommendation_v2_config_path)
+    )
+    ranking_config = (
+        None
+        if ranking_config_path is None
+        else load_ranking_engine_configuration(ranking_config_path)
+    )
+    if (
+        eps_selection_config is None
+        and industry_policy_config is None
+        and analyst_consensus_config is None
+        and agreement_config is None
+        and momentum_config is None
+        and range_config is None
+        and recommendation_v2_config is None
+        and ranking_config is None
+    ):
         return analyze_stocks(stocks_configuration.symbols, valuation_configuration)
-    if industry_policy_config is None and analyst_consensus_config is None:
+    if (
+        industry_policy_config is None
+        and analyst_consensus_config is None
+        and agreement_config is None
+        and momentum_config is None
+        and range_config is None
+        and recommendation_v2_config is None
+        and ranking_config is None
+    ):
         return analyze_stocks(
             stocks_configuration.symbols,
             valuation_configuration,
             eps_selection_config,
         )
-    if analyst_consensus_config is None:
+    if analyst_consensus_config is None and agreement_config is None and momentum_config is None and range_config is None and recommendation_v2_config is None and ranking_config is None:
         return analyze_stocks(
             stocks_configuration.symbols,
             valuation_configuration,
             eps_selection_config,
             industry_policy_config,
+        )
+    if momentum_config is None and range_config is None and recommendation_v2_config is None and ranking_config is None:
+        return analyze_stocks(
+            stocks_configuration.symbols,
+            valuation_configuration,
+            eps_selection_config,
+            industry_policy_config,
+            analyst_consensus_config,
+            agreement_config,
+        )
+    if recommendation_v2_config is None and ranking_config is None:
+        return analyze_stocks(
+            stocks_configuration.symbols,
+            valuation_configuration,
+            eps_selection_config,
+            industry_policy_config,
+            analyst_consensus_config,
+            agreement_config,
+            momentum_config,
+            range_config,
         )
     return analyze_stocks(
         stocks_configuration.symbols,
@@ -188,6 +315,11 @@ def analyze_stocks_from_config_files(
         eps_selection_config,
         industry_policy_config,
         analyst_consensus_config,
+        agreement_config,
+        momentum_config,
+        range_config,
+        recommendation_v2_config,
+        ranking_config,
     )
 
 
@@ -198,6 +330,11 @@ def analyze_stocks_with_profiles_from_config_files(
     eps_selection_path: str | Path | None = None,
     industry_policies_path: str | Path | None = None,
     analyst_consensus_path: str | Path | None = None,
+    agreement_config_path: str | Path | None = None,
+    momentum_config_path: str | Path | None = None,
+    range_config_path: str | Path | None = None,
+    recommendation_v2_config_path: str | Path | None = None,
+    ranking_config_path: str | Path | None = None,
 ) -> BatchStockAnalysisResult:
     """Load valuation, stock, and profile files once, then run batch analysis."""
     valuation_configuration = load_valuation_configuration(valuation_config_path)
@@ -218,26 +355,90 @@ def analyze_stocks_with_profiles_from_config_files(
         if analyst_consensus_path is None
         else load_analyst_consensus_configuration(analyst_consensus_path)
     )
-    if eps_selection_config is None and industry_policy_config is None and analyst_consensus_config is None:
+    agreement_config = (
+        None
+        if agreement_config_path is None
+        else load_agreement_engine_configuration(agreement_config_path)
+    )
+    momentum_config = (
+        None
+        if momentum_config_path is None
+        else load_momentum_reference_configuration(momentum_config_path)
+    )
+    range_config = (
+        None
+        if range_config_path is None
+        else load_fair_value_range_configuration(range_config_path)
+    )
+    recommendation_v2_config = (
+        None
+        if recommendation_v2_config_path is None
+        else load_recommendation_v2_configuration(recommendation_v2_config_path)
+    )
+    ranking_config = (
+        None
+        if ranking_config_path is None
+        else load_ranking_engine_configuration(ranking_config_path)
+    )
+    if (
+        eps_selection_config is None
+        and industry_policy_config is None
+        and analyst_consensus_config is None
+        and agreement_config is None
+        and momentum_config is None
+        and range_config is None
+        and recommendation_v2_config is None
+        and ranking_config is None
+    ):
         return analyze_stocks_with_profiles(
             stocks_configuration.symbols,
             valuation_configuration,
             profiles,
         )
-    if industry_policy_config is None and analyst_consensus_config is None:
+    if (
+        industry_policy_config is None
+        and analyst_consensus_config is None
+        and agreement_config is None
+        and momentum_config is None
+        and range_config is None
+        and recommendation_v2_config is None
+        and ranking_config is None
+    ):
         return analyze_stocks_with_profiles(
             stocks_configuration.symbols,
             valuation_configuration,
             profiles,
             eps_selection_config,
         )
-    if analyst_consensus_config is None:
+    if analyst_consensus_config is None and agreement_config is None and momentum_config is None and range_config is None and recommendation_v2_config is None and ranking_config is None:
         return analyze_stocks_with_profiles(
             stocks_configuration.symbols,
             valuation_configuration,
             profiles,
             eps_selection_config,
             industry_policy_config,
+        )
+    if momentum_config is None and range_config is None and recommendation_v2_config is None and ranking_config is None:
+        return analyze_stocks_with_profiles(
+            stocks_configuration.symbols,
+            valuation_configuration,
+            profiles,
+            eps_selection_config,
+            industry_policy_config,
+            analyst_consensus_config,
+            agreement_config,
+        )
+    if recommendation_v2_config is None and ranking_config is None:
+        return analyze_stocks_with_profiles(
+            stocks_configuration.symbols,
+            valuation_configuration,
+            profiles,
+            eps_selection_config,
+            industry_policy_config,
+            analyst_consensus_config,
+            agreement_config,
+            momentum_config,
+            range_config,
         )
     return analyze_stocks_with_profiles(
         stocks_configuration.symbols,
@@ -246,6 +447,98 @@ def analyze_stocks_with_profiles_from_config_files(
         eps_selection_config,
         industry_policy_config,
         analyst_consensus_config,
+        agreement_config,
+        momentum_config,
+        range_config,
+        recommendation_v2_config,
+        ranking_config,
+    )
+
+
+def analyze_symbol_list_from_config_files(
+    symbols: Sequence[str],
+    valuation_config_path: str | Path = "config/valuation.yaml",
+    eps_selection_path: str | Path | None = None,
+    industry_policies_path: str | Path | None = None,
+    analyst_consensus_path: str | Path | None = None,
+    agreement_config_path: str | Path | None = None,
+    momentum_config_path: str | Path | None = None,
+    range_config_path: str | Path | None = None,
+    recommendation_v2_config_path: str | Path | None = None,
+    ranking_config_path: str | Path | None = None,
+) -> BatchStockAnalysisResult:
+    configuration = load_valuation_configuration(valuation_config_path)
+    eps_selection_config = None if eps_selection_path is None else load_eps_selection_configuration(eps_selection_path)
+    industry_policy_config = None if industry_policies_path is None else load_industry_policy_configuration(industry_policies_path)
+    analyst_consensus_config = None if analyst_consensus_path is None else load_analyst_consensus_configuration(analyst_consensus_path)
+    agreement_config = None if agreement_config_path is None else load_agreement_engine_configuration(agreement_config_path)
+    momentum_config = None if momentum_config_path is None else load_momentum_reference_configuration(momentum_config_path)
+    range_config = None if range_config_path is None else load_fair_value_range_configuration(range_config_path)
+    recommendation_v2_config = None if recommendation_v2_config_path is None else load_recommendation_v2_configuration(recommendation_v2_config_path)
+    ranking_config = None if ranking_config_path is None else load_ranking_engine_configuration(ranking_config_path)
+    return analyze_stocks(
+        symbols,
+        configuration,
+        eps_selection_config,
+        industry_policy_config,
+        analyst_consensus_config,
+        agreement_config,
+        momentum_config,
+        range_config,
+        recommendation_v2_config,
+        ranking_config,
+    )
+
+
+def analyze_symbol_list_with_profiles_from_config_files(
+    symbols: Sequence[str],
+    valuation_config_path: str | Path = "config/valuation.yaml",
+    profiles_path: str | Path = "config/valuation_profiles.yaml",
+    eps_selection_path: str | Path | None = None,
+    industry_policies_path: str | Path | None = None,
+    analyst_consensus_path: str | Path | None = None,
+    agreement_config_path: str | Path | None = None,
+    momentum_config_path: str | Path | None = None,
+    range_config_path: str | Path | None = None,
+    recommendation_v2_config_path: str | Path | None = None,
+    ranking_config_path: str | Path | None = None,
+) -> BatchStockAnalysisResult:
+    configuration = load_valuation_configuration(valuation_config_path)
+    profiles = load_valuation_profiles(profiles_path)
+    eps_selection_config = None if eps_selection_path is None else load_eps_selection_configuration(eps_selection_path)
+    industry_policy_config = None if industry_policies_path is None else load_industry_policy_configuration(industry_policies_path)
+    analyst_consensus_config = None if analyst_consensus_path is None else load_analyst_consensus_configuration(analyst_consensus_path)
+    agreement_config = None if agreement_config_path is None else load_agreement_engine_configuration(agreement_config_path)
+    momentum_config = None if momentum_config_path is None else load_momentum_reference_configuration(momentum_config_path)
+    range_config = None if range_config_path is None else load_fair_value_range_configuration(range_config_path)
+    recommendation_v2_config = None if recommendation_v2_config_path is None else load_recommendation_v2_configuration(recommendation_v2_config_path)
+    ranking_config = None if ranking_config_path is None else load_ranking_engine_configuration(ranking_config_path)
+    return analyze_stocks_with_profiles(
+        symbols,
+        configuration,
+        profiles,
+        eps_selection_config,
+        industry_policy_config,
+        analyst_consensus_config,
+        agreement_config,
+        momentum_config,
+        range_config,
+        recommendation_v2_config,
+        ranking_config,
+    )
+
+
+def _attach_ranking(
+    result: BatchStockAnalysisResult,
+    configuration: RankingEngineConfiguration | None,
+) -> BatchStockAnalysisResult:
+    if configuration is None:
+        return result
+    return BatchStockAnalysisResult(
+        requested_symbols=result.requested_symbols,
+        successful_results=result.successful_results,
+        failures=result.failures,
+        ranking_result=rank_stocks(result.successful_results, result.failures, configuration),
     )
 
 

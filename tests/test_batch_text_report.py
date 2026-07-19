@@ -1,11 +1,14 @@
 import pytest
 
+from datetime import date, datetime, timezone
+from src.analysis.momentum_reference import MomentumReferenceStatus, PriceField, RsiCrossDirection
 from src.analysis.research_valuation import (
     ResearchValuationResult,
     ResearchValuationStatus,
     ValuationComparisonResult,
 )
 from src.analysis.eps_selection import EPSSelectionResult, EPSSelectionStatus
+from src.analysis.fair_value_range import calculate_fair_value_range
 from src.analysis.industry_policy import IndustryPolicyTargetPEResult
 from tests.test_text_report import analyst_result
 from src.config.eps_selection import EPSSelectionMethod
@@ -14,9 +17,25 @@ from src.config.valuation_profiles import ValuationProfile, ValuationStyle
 from src.reports.batch_text_report import format_batch_stock_analysis_report
 from src.services.batch_analysis import BatchStockAnalysisResult, StockAnalysisFailure
 from src.services.stock_analysis import StockAnalysisWithProfileResult
-from tests.test_text_report import service_result, valuation
+from tests.test_text_report import (
+    _agreement_config,
+    _mu_agreement_collection,
+    _range_config,
+    momentum_result,
+    recommendation_v2_result,
+    service_result,
+    valuation,
+)
 from src.analysis.valuation_decision import ValuationRecommendation
 from src.analysis.valuation_snapshot import build_valuation_snapshot_collection
+from src.analysis.agreement_engine import analyze_agreement
+from src.analysis.ranking_engine import (
+    MomentumSentimentPosition,
+    RankingCategory,
+    StockRankingEntry,
+    StockRankingResult,
+    StockRankingStatus,
+)
 
 
 def batch_result(successes=(), failures=(), requested=("LITE", "MU")):
@@ -254,7 +273,7 @@ def test_batch_report_includes_analyst_consensus_table_when_present() -> None:
     assert "ANALYST CONSENSUS" in report
     assert "Mean Target" in report
     assert "Analyst FV" in report
-    assert "MODERATE" in report
+    assert "MEDIUM" in report
     assert "COMPLETE" in report
 
 
@@ -291,3 +310,196 @@ def test_batch_snapshot_table_is_present_with_option() -> None:
     assert "147.42 USD" in report
     assert "COMPLETE" in report
     assert "MEDIUM" in report
+
+
+def test_batch_agreement_table_is_present_with_option() -> None:
+    base = service_result()
+    selected = type(base)(
+        company=base.company,
+        treasury=base.treasury,
+        valuation=base.valuation,
+        agreement_result=analyze_agreement(_mu_agreement_collection(), _agreement_config()),
+    )
+
+    report = format_batch_stock_analysis_report(
+        batch_result((selected,), requested=("LITE",)),
+        show_agreement=True,
+    )
+
+    assert "MODEL AGREEMENT ANALYSIS" in report
+    assert "Core" in report
+    assert "Extended" in report
+    assert "Overall" in report
+    assert "STRONG" in report
+    assert "MODERATE" in report
+    assert "691.27 USD" in report
+    assert "OUTLIER" in report
+
+
+def test_batch_momentum_table_is_present_with_option() -> None:
+    base = service_result()
+    selected = type(base)(
+        company=base.company,
+        treasury=base.treasury,
+        valuation=base.valuation,
+        momentum_reference=momentum_result(),
+    )
+
+    plain = format_batch_stock_analysis_report(batch_result((selected,), requested=("LITE",)))
+    shown = format_batch_stock_analysis_report(
+        batch_result((selected,), requested=("LITE",)),
+        show_momentum=True,
+    )
+
+    assert "MARKET MOMENTUM REFERENCE" not in plain
+    assert "MARKET MOMENTUM REFERENCE" in shown
+    assert "Current RSI" in shown
+    assert "CROSS_ABOVE" in shown
+    assert "+14.29%" in shown
+
+
+def test_batch_range_table_is_present_with_option() -> None:
+    base = service_result()
+    collection = _mu_agreement_collection()
+    agreement = analyze_agreement(collection, _agreement_config())
+    selected = type(base)(
+        company=base.company,
+        treasury=base.treasury,
+        valuation=base.valuation,
+        fair_value_range=calculate_fair_value_range(
+            collection,
+            agreement,
+            848.95,
+            _range_config(),
+            momentum_result(),
+        ),
+    )
+
+    plain = format_batch_stock_analysis_report(batch_result((selected,), requested=("LITE",)))
+    shown = format_batch_stock_analysis_report(
+        batch_result((selected,), requested=("LITE",)),
+        show_range=True,
+    )
+
+    assert "FAIR VALUE RANGE" not in plain
+    assert "FAIR VALUE RANGE" in shown
+    assert "Conservative" in shown
+    assert "618.10 USD" in shown
+    assert "691.27 USD" in shown
+    assert "SIGNIFICANTLY_OVERVALUED" in shown
+
+
+def test_batch_recommendation_v2_table_is_present_with_option() -> None:
+    base = service_result()
+    selected = type(base)(
+        company=base.company,
+        treasury=base.treasury,
+        valuation=base.valuation,
+        recommendation_v2=recommendation_v2_result(),
+    )
+
+    plain = format_batch_stock_analysis_report(batch_result((selected,), requested=("LITE",)))
+    shown = format_batch_stock_analysis_report(
+        batch_result((selected,), requested=("LITE",)),
+        show_recommendation_v2=True,
+    )
+
+    assert "RECOMMENDATION V2" not in plain
+    assert "RECOMMENDATION V2" in shown
+    assert "Decision" in shown
+    assert "SELL" in shown
+    assert "SIGNIFICANTLY_OVERVALUED" in shown
+    assert "ALIGNED" in shown
+
+
+def ranking_result() -> StockRankingResult:
+    return StockRankingResult(
+        status=StockRankingStatus.COMPLETE,
+        entries=(
+            StockRankingEntry(
+                rank=1,
+                symbol="LITE",
+                company_name="Lumentum",
+                total_score=82.5,
+                normalized_score=82.5,
+                category=RankingCategory.TOP_OPPORTUNITY,
+                eligible=True,
+                recommendation_v2=recommendation_v2_result().decision,
+                valuation_condition=recommendation_v2_result().valuation_condition,
+                evidence_quality=recommendation_v2_result().evidence_quality,
+                agreement=recommendation_v2_result().core_agreement,
+                momentum=recommendation_v2_result().momentum_condition,
+                current_price=80.0,
+                base_value=100.0,
+                current_vs_base_pct=-20.0,
+                current_rsi=55.0,
+                rsi_reference_date=date(2026, 7, 2),
+                rsi_reference_price=76.0,
+                rsi_reference_rsi=49.5,
+                rsi_cross_direction=RsiCrossDirection.CROSS_ABOVE,
+                current_vs_rsi_reference_amount=4.0,
+                current_vs_rsi_reference_pct=5.0,
+                momentum_reference_status=MomentumReferenceStatus.COMPLETE,
+                momentum_reference_price_field=PriceField.CLOSE,
+                momentum_reference_trading_days=10,
+                momentum_sentiment_position=MomentumSentimentPosition.ABOVE_NEUTRAL_REFERENCE,
+                valuation_score=100.0,
+                recommendation_score=80.0,
+                agreement_score=100.0,
+                evidence_score=100.0,
+                momentum_score=60.0,
+                penalty=0.0,
+                warnings=("sample warning",),
+                rationale=("sample rationale",),
+            ),
+        ),
+        top_symbol="LITE",
+        top_score=82.5,
+        successful_symbols=("LITE",),
+        failed_symbols=(),
+        generated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+    )
+
+
+def test_batch_ranking_table_and_details_are_present_with_option() -> None:
+    result = BatchStockAnalysisResult(
+        requested_symbols=("LITE",),
+        successful_results=(service_result(),),
+        failures=(),
+        ranking_result=ranking_result(),
+    )
+
+    plain = format_batch_stock_analysis_report(result)
+    shown = format_batch_stock_analysis_report(result, show_ranking=True, show_ranking_details=True)
+
+    assert "MULTI STOCK RANKING" not in plain
+    assert "MULTI STOCK RANKING" in shown
+    assert "TOP_OPPORTUNITY" in shown
+    assert "ELIGIBLE" in shown
+    assert "RSI 50 MOMENTUM REFERENCE" in shown
+    assert "ABOVE" in shown
+    assert "RANKING DETAILS" in shown
+    assert "sample rationale" in shown
+
+
+def test_ranking_csv_output() -> None:
+    result = BatchStockAnalysisResult(("LITE",), (service_result(),), (), ranking_result())
+
+    report = format_batch_stock_analysis_report(result, show_ranking=True, ranking_format="csv")
+
+    assert report.splitlines()[0].startswith("rank,symbol,score")
+    assert "1,LITE,82.5,TOP_OPPORTUNITY,ELIGIBLE" in report
+    assert "2026-07-02" in report
+    assert "ABOVE_NEUTRAL_REFERENCE" in report
+
+
+def test_ranking_json_output() -> None:
+    result = BatchStockAnalysisResult(("LITE",), (service_result(),), (), ranking_result())
+
+    report = format_batch_stock_analysis_report(result, show_ranking=True, ranking_format="json")
+
+    assert '"top_symbol": "LITE"' in report
+    assert '"category": "TOP_OPPORTUNITY"' in report
+    assert '"eligibility": "ELIGIBLE"' in report
+    assert '"momentum_reference"' in report
+    assert '"sentiment_position": "ABOVE_NEUTRAL_REFERENCE"' in report

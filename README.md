@@ -34,6 +34,12 @@ Run one stock:
 python -m src.main LITE
 ```
 
+Run the local web dashboard:
+
+```bash
+streamlit run app.py
+```
+
 Inspect Yahoo EPS source fields for one stock:
 
 ```bash
@@ -74,6 +80,24 @@ Show unified valuation snapshots for diagnostics:
 
 ```bash
 python -m src.main MU --profiles config/valuation_profiles.yaml --eps-selection config/eps_selection.yaml --industry-policies config/industry_policies.yaml --show-snapshots
+```
+
+Show snapshot model agreement diagnostics:
+
+```bash
+python -m src.main MU --profiles config/valuation_profiles.yaml --eps-selection config/eps_selection.yaml --industry-policies config/industry_policies.yaml --analyst-consensus config/analyst_consensus.yaml --agreement-config config/agreement_engine.yaml --show-agreement
+```
+
+Show RSI 50 momentum reference and fair-value range diagnostics:
+
+```bash
+python -m src.main MU --profiles config/valuation_profiles.yaml --eps-selection config/eps_selection.yaml --industry-policies config/industry_policies.yaml --analyst-consensus config/analyst_consensus.yaml --agreement-config config/agreement_engine.yaml --momentum-config config/momentum_reference.yaml --range-config config/fair_value_range.yaml --show-momentum --show-range
+```
+
+Show Recommendation V2 diagnostics:
+
+```bash
+python -m src.main MU --profiles config/valuation_profiles.yaml --eps-selection config/eps_selection.yaml --industry-policies config/industry_policies.yaml --analyst-consensus config/analyst_consensus.yaml --agreement-config config/agreement_engine.yaml --momentum-config config/momentum_reference.yaml --range-config config/fair_value_range.yaml --recommendation-v2-config config/recommendation_v2.yaml --show-recommendation-v2
 ```
 
 Use research profiles and EPS selection together:
@@ -175,13 +199,32 @@ Analyst consensus is an independent valuation model enabled with
 BUY/HOLD/SELL, automatic PER fair value, research fair value, EPS selection,
 Target PE, or industry policy in this phase.
 
-The model uses Yahoo analyst target mean, high, and low. The midpoint is the
-high/low midpoint, not a true median. Wide target dispersion reduces consensus
-quality, and Yahoo may not provide a reliable target publication date.
+The model uses Yahoo analyst target mean, high, and low from the already
+downloaded company data. It produces a `ValuationSnapshot` directly, with
+`ANALYST_CONSENSUS` as the model type and `MARKET_EXPECTATION` as the value
+type. The midpoint is the high/low midpoint, not a true median. Wide target
+dispersion reduces model-local confidence.
 
 Treasury adjustment is disabled by default because analyst targets may already
 include market-rate assumptions. Analyst targets are market expectations, not
 objective intrinsic value.
+
+## RSI 50 Momentum Reference
+
+The optional RSI momentum reference is enabled with `--momentum-config
+config/momentum_reference.yaml` and displayed with `--show-momentum`. It uses
+daily price history, prefers adjusted close when available, calculates Wilder
+RSI(14), and reports the price at the most recent RSI 50 neutral-line event.
+
+An upward event moves from below 50 to 50 or above. A downward event moves from
+above 50 to 50 or below. Consecutive exact-50 rows are de-duplicated using the
+nearest earlier non-50 RSI. If no crossing exists and fallback is enabled, the
+result is labeled `FALLBACK` and uses the most recent RSI point nearest to 50;
+that fallback is not described as a crossing.
+
+The RSI reference is technical market-momentum context only. It is not
+intrinsic value, not a trading signal, and not part of BUY/HOLD/SELL
+recommendation logic.
 
 ## Unified Valuation Snapshots
 
@@ -197,3 +240,161 @@ final investment confidence score.
 Omitting `--show-snapshots` preserves existing output. Snapshots prepare the
 repository for future analyst, agreement, and fair-value range engines without
 changing current valuation formulas or recommendations.
+
+## Agreement Engine
+
+Agreement Engine V1 is enabled with `--agreement-config
+config/agreement_engine.yaml` and displayed with `--show-agreement`. It consumes
+only `ValuationSnapshotCollection`; it does not download Yahoo data, recalculate
+valuation models, or change BUY/HOLD/SELL recommendations.
+
+The engine separates intrinsic values from supporting references and market
+expectations. `INTRINSIC_VALUE` snapshots form the core agreement set.
+`REFERENCE_VALUE` snapshots can be included in an extended intrinsic cluster,
+while `MARKET_EXPECTATION` snapshots such as analyst consensus are compared
+against the intrinsic median without controlling intrinsic agreement by default.
+
+Pairwise model differences use the symmetric formula:
+
+```text
+abs(A - B) / ((A + B) / 2) * 100
+```
+
+Outliers use a one-sided comparison to the relevant median. The default
+thresholds are configured in `config/agreement_engine.yaml`: strong/moderate/weak
+pairwise agreement at 10%, 20%, and 35%, and possible/extreme outliers at 50%
+and 80%. Analyst consensus can therefore be shown as a market-expectation
+outlier without weakening strong agreement between the core intrinsic models.
+
+## Fair Value Range
+
+The optional Fair Value Range Engine is enabled with `--range-config
+config/fair_value_range.yaml` and displayed with `--show-range`. It consumes
+the existing snapshot collection, the existing Agreement Engine result when
+supplied, current market price, and optionally the RSI momentum reference. It
+does not recalculate Automatic PER, Research PER, DCF Reference, or Analyst
+Consensus.
+
+The conservative value uses the lowest valid intrinsic or supporting reference
+value after configured outlier filtering. The base value is a deterministic
+confidence-weighted median over intrinsic valuation snapshots only. The
+optimistic intrinsic value is the highest valid intrinsic snapshot. DCF can
+support the floor, but Analyst Consensus remains a separate market expectation
+and does not widen the intrinsic range. RSI is shown separately and is never
+mixed into intrinsic valuation math.
+
+Default confidence weights are HIGH 1.00, MEDIUM 0.75, LOW 0.50, and UNKNOWN
+0.25. Market position compares current price with the base value:
+`<= -30%` deeply undervalued, `< -10%` undervalued, `<= +10%` near fair value,
+`<= +20%` above fair value, and above that significantly overvalued. This
+classification is descriptive and does not replace the existing recommendation.
+
+In batch mode, each symbol gets its own optional RSI and range result. Missing
+optional history, research, DCF, analyst data, or range inputs are tolerated per
+symbol so one failure does not stop the batch.
+
+## Recommendation V2
+
+Recommendation V2 is enabled with `--recommendation-v2-config
+config/recommendation_v2.yaml` and displayed with
+`--show-recommendation-v2`. It is additive: the legacy BUY/HOLD/SELL decision
+is still calculated and reported, and V2 compares itself with that legacy
+recommendation.
+
+V2 is valuation-first. It classifies current price versus base intrinsic value
+as deeply undervalued, undervalued, slightly undervalued, near fair value,
+moderately overvalued, significantly overvalued, or extremely overvalued.
+Momentum is a timing modifier using current RSI and price versus the latest RSI
+50 reference. Evidence quality comes from intrinsic model count, core
+agreement, range status, and intrinsic snapshot confidence.
+
+The decision matrix is deterministic. Undervalued names with strong evidence
+can become `BUY` or `STRONG_BUY`; weak momentum can reduce urgency to
+`ACCUMULATE`. Overvalued names become `REDUCE` or `SELL` depending on valuation,
+evidence, and momentum. Conflicted core agreement caps bullish decisions at
+`ACCUMULATE` and bearish decisions at `REDUCE`. Insufficient intrinsic evidence
+returns `INSUFFICIENT_DATA`.
+
+Analyst Consensus is context only. A low-confidence or outlier analyst target
+is displayed in the V2 rationale but does not override intrinsic valuation. In
+batch mode, each successful symbol gets its own Recommendation V2 result when
+the optional config is supplied, while failed symbols remain isolated by the
+existing batch failure handling.
+
+## Multi-Stock Ranking RSI 50 Reference
+
+Multi-stock ranking is enabled with `--ranking-config config/ranking_engine.yaml`
+and displayed with `--show-ranking`. Ranking consumes completed per-symbol
+analysis results, including Recommendation V2 and the existing RSI 50 Momentum
+Reference; it does not download price history again.
+
+The RSI 50 Reference Price is the price recorded at the latest RSI neutral-line
+event: `CROSS_ABOVE`, `CROSS_BELOW`, or the `NEAREST_TO_50` fallback when no
+qualifying crossing exists. Ranking reports it as a momentum neutral reference
+and market sentiment context. It is not intrinsic value, fair value, guaranteed
+support, actual investor average purchase price, or volume-weighted cost basis.
+
+Ranking V1 classifies current price versus the RSI 50 reference into
+`WELL_ABOVE_NEUTRAL_REFERENCE`, `ABOVE_NEUTRAL_REFERENCE`,
+`NEAR_NEUTRAL_REFERENCE`, `BELOW_NEUTRAL_REFERENCE`, or
+`WELL_BELOW_NEUTRAL_REFERENCE`. The default bands are +10%, above +3%, between
+-3% and +3%, below -3%, and -10% or worse. These fields appear in the main
+ranking table, the RSI 50 Momentum Reference table, `--show-ranking-details`,
+CSV, and JSON output.
+
+This sentiment position is display-only in V1. `affect_ranking_score` must
+remain `false`, so it does not add another ranking component, alter intrinsic
+valuation, change Recommendation V2, or double-count RSI beyond the existing
+MomentumCondition score.
+
+Example:
+
+```bash
+python -m src.main MU NVDA AMAT LITE COHR --profiles config/valuation_profiles.yaml --eps-selection config/eps_selection.yaml --industry-policies config/industry_policies.yaml --analyst-consensus config/analyst_consensus.yaml --agreement-config config/agreement_engine.yaml --momentum-config config/momentum_reference.yaml --range-config config/fair_value_range.yaml --recommendation-v2-config config/recommendation_v2.yaml --ranking-config config/ranking_engine.yaml --show-ranking --show-ranking-details --ranking-only
+```
+
+## Streamlit Web Dashboard
+
+The Streamlit dashboard in `app.py` reuses the existing batch service layer
+directly. It does not shell out to the CLI and does not duplicate valuation,
+Recommendation V2, RSI, or ranking calculations.
+
+Features:
+
+- Batch ticker input with comma, space, or newline separation.
+- Ranking table with display-only filters for eligibility, category,
+  Recommendation V2, and RSI50 sentiment.
+- Top summary metrics for eligible opportunities, insufficient symbols, and
+  RSI50 sentiment distribution.
+- Selected-symbol value comparison across current price, intrinsic range,
+  analyst market expectation, and RSI50 reference price.
+- Dedicated RSI 50 Momentum Reference section using the existing deterministic
+  interpretation text.
+- Stock detail tabs for overview, valuation snapshots, Recommendation V2,
+  RSI50 momentum, model evidence, and warnings.
+- Ranking CSV and JSON downloads using the existing ranking serialization.
+
+Default dashboard configuration files:
+
+- `config/valuation_profiles.yaml`
+- `config/eps_selection.yaml`
+- `config/industry_policies.yaml`
+- `config/analyst_consensus.yaml`
+- `config/agreement_engine.yaml`
+- `config/momentum_reference.yaml`
+- `config/fair_value_range.yaml`
+- `config/recommendation_v2.yaml`
+- `config/ranking_engine.yaml`
+
+The default dashboard ticker list is `MU, NVDA, AMAT, LITE, COHR`. The app
+stores the latest successful result in Streamlit session state and only runs a
+new analysis after clicking Analyze.
+
+Screenshots: add local screenshots here after running the dashboard.
+
+Deployment:
+
+```bash
+pip install -r requirements.txt
+streamlit run app.py
+```

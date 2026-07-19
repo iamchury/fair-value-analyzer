@@ -799,3 +799,481 @@ def test_inspect_eps_rejects_show_snapshots_combination() -> None:
         main_module.main(["MU", "--inspect-eps", "--show-snapshots"])
 
     assert exc_info.value.code == 2
+
+
+def test_single_agreement_option_uses_service_and_formatter_flags(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    calls = []
+    result = object()
+    monkeypatch.setattr(
+        main_module,
+        "analyze_stock_from_config_file",
+        lambda **kwargs: calls.append(("analyze", kwargs)) or result,
+    )
+    monkeypatch.setattr(
+        main_module,
+        "format_stock_analysis_report",
+        lambda value, show_snapshots=False, show_agreement=False: calls.append(
+            ("format", value, show_snapshots, show_agreement)
+        )
+        or "AGREEMENT",
+    )
+
+    assert (
+        main_module.main(
+            ["MU", "--agreement-config", "agreement.yaml", "--show-agreement"]
+        )
+        == 0
+    )
+
+    assert calls == [
+        (
+            "analyze",
+            {
+                "symbol": "MU",
+                "config_path": "config/valuation.yaml",
+                "agreement_config_path": "agreement.yaml",
+            },
+        ),
+        ("format", result, False, True),
+    ]
+    assert capsys.readouterr().out == "AGREEMENT\n"
+
+
+def test_batch_agreement_option_uses_service_and_formatter_flags(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    result = BatchStockAnalysisResult(("MU",), (object(),), ())
+    calls = []
+    monkeypatch.setattr(
+        main_module,
+        "analyze_stocks_from_config_files",
+        lambda **kwargs: calls.append(("analyze", kwargs)) or result,
+    )
+    monkeypatch.setattr(
+        main_module,
+        "format_batch_stock_analysis_report",
+        lambda value, show_snapshots=False, show_agreement=False: calls.append(
+            ("format", value, show_snapshots, show_agreement)
+        )
+        or "BATCH AGREEMENT",
+    )
+
+    assert (
+        main_module.main(
+            [
+                "--stocks",
+                "stocks.yaml",
+                "--agreement-config",
+                "agreement.yaml",
+                "--show-agreement",
+            ]
+        )
+        == 0
+    )
+
+    assert calls == [
+        (
+            "analyze",
+            {
+                "stocks_path": "stocks.yaml",
+                "valuation_config_path": "config/valuation.yaml",
+                "agreement_config_path": "agreement.yaml",
+            },
+        ),
+        ("format", result, False, True),
+    ]
+    assert capsys.readouterr().out == "BATCH AGREEMENT\n"
+
+
+def test_show_agreement_requires_agreement_config() -> None:
+    with pytest.raises(SystemExit) as exc_info:
+        main_module.main(["MU", "--show-agreement"])
+
+    assert exc_info.value.code == 2
+
+
+def test_inspect_eps_rejects_agreement_options() -> None:
+    with pytest.raises(SystemExit) as exc_info:
+        main_module.main(["MU", "--inspect-eps", "--agreement-config", "agreement.yaml"])
+
+    assert exc_info.value.code == 2
+
+    with pytest.raises(SystemExit) as exc_info:
+        main_module.main(["MU", "--inspect-eps", "--show-agreement"])
+
+    assert exc_info.value.code == 2
+
+
+def test_single_momentum_and_range_options_use_service_and_formatter_flags(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    calls = []
+    result = object()
+    monkeypatch.setattr(
+        main_module,
+        "analyze_stock_from_config_file",
+        lambda **kwargs: calls.append(("analyze", kwargs)) or result,
+    )
+    monkeypatch.setattr(
+        main_module,
+        "format_stock_analysis_report",
+        lambda value, **kwargs: calls.append(("format", value, kwargs)) or "RANGE",
+    )
+
+    assert (
+        main_module.main(
+            [
+                "MU",
+                "--momentum-config",
+                "momentum.yaml",
+                "--range-config",
+                "range.yaml",
+                "--show-momentum",
+                "--show-range",
+            ]
+        )
+        == 0
+    )
+
+    assert calls == [
+        (
+            "analyze",
+            {
+                "symbol": "MU",
+                "config_path": "config/valuation.yaml",
+                "momentum_config_path": "momentum.yaml",
+                "range_config_path": "range.yaml",
+            },
+        ),
+        ("format", result, {"show_momentum": True, "show_range": True}),
+    ]
+    assert capsys.readouterr().out == "RANGE\n"
+
+
+def test_batch_momentum_and_range_options_use_service_and_formatter_flags(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    result = BatchStockAnalysisResult(("MU",), (object(),), ())
+    calls = []
+    monkeypatch.setattr(
+        main_module,
+        "analyze_stocks_from_config_files",
+        lambda **kwargs: calls.append(("analyze", kwargs)) or result,
+    )
+    monkeypatch.setattr(
+        main_module,
+        "format_batch_stock_analysis_report",
+        lambda value, **kwargs: calls.append(("format", value, kwargs)) or "BATCH RANGE",
+    )
+
+    assert (
+        main_module.main(
+            [
+                "--stocks",
+                "stocks.yaml",
+                "--momentum-config",
+                "momentum.yaml",
+                "--range-config",
+                "range.yaml",
+                "--show-momentum",
+                "--show-range",
+            ]
+        )
+        == 0
+    )
+
+    assert calls == [
+        (
+            "analyze",
+            {
+                "stocks_path": "stocks.yaml",
+                "valuation_config_path": "config/valuation.yaml",
+                "momentum_config_path": "momentum.yaml",
+                "range_config_path": "range.yaml",
+            },
+        ),
+        ("format", result, {"show_momentum": True, "show_range": True}),
+    ]
+    assert capsys.readouterr().out == "BATCH RANGE\n"
+
+
+def test_show_momentum_and_range_require_configs() -> None:
+    with pytest.raises(SystemExit) as exc_info:
+        main_module.main(["MU", "--show-momentum"])
+
+    assert exc_info.value.code == 2
+
+    with pytest.raises(SystemExit) as exc_info:
+        main_module.main(["MU", "--show-range"])
+
+    assert exc_info.value.code == 2
+
+
+def test_inspect_eps_rejects_momentum_and_range_options() -> None:
+    for option in ("--momentum-config", "--range-config"):
+        with pytest.raises(SystemExit) as exc_info:
+            main_module.main(["MU", "--inspect-eps", option, "feature.yaml"])
+
+        assert exc_info.value.code == 2
+
+    for option in ("--show-momentum", "--show-range"):
+        with pytest.raises(SystemExit) as exc_info:
+            main_module.main(["MU", "--inspect-eps", option])
+
+        assert exc_info.value.code == 2
+
+
+def test_single_recommendation_v2_option_uses_service_and_formatter_flag(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    calls = []
+    result = object()
+    monkeypatch.setattr(
+        main_module,
+        "analyze_stock_from_config_file",
+        lambda **kwargs: calls.append(("analyze", kwargs)) or result,
+    )
+    monkeypatch.setattr(
+        main_module,
+        "format_stock_analysis_report",
+        lambda value, **kwargs: calls.append(("format", value, kwargs)) or "REC V2",
+    )
+
+    assert (
+        main_module.main(
+            [
+                "MU",
+                "--recommendation-v2-config",
+                "recommendation.yaml",
+                "--show-recommendation-v2",
+            ]
+        )
+        == 0
+    )
+
+    assert calls == [
+        (
+            "analyze",
+            {
+                "symbol": "MU",
+                "config_path": "config/valuation.yaml",
+                "recommendation_v2_config_path": "recommendation.yaml",
+            },
+        ),
+        ("format", result, {"show_recommendation_v2": True}),
+    ]
+    assert capsys.readouterr().out == "REC V2\n"
+
+
+def test_batch_recommendation_v2_option_uses_service_and_formatter_flag(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    result = BatchStockAnalysisResult(("MU",), (object(),), ())
+    calls = []
+    monkeypatch.setattr(
+        main_module,
+        "analyze_stocks_from_config_files",
+        lambda **kwargs: calls.append(("analyze", kwargs)) or result,
+    )
+    monkeypatch.setattr(
+        main_module,
+        "format_batch_stock_analysis_report",
+        lambda value, **kwargs: calls.append(("format", value, kwargs)) or "BATCH REC V2",
+    )
+
+    assert (
+        main_module.main(
+            [
+                "--stocks",
+                "stocks.yaml",
+                "--recommendation-v2-config",
+                "recommendation.yaml",
+                "--show-recommendation-v2",
+            ]
+        )
+        == 0
+    )
+
+    assert calls == [
+        (
+            "analyze",
+            {
+                "stocks_path": "stocks.yaml",
+                "valuation_config_path": "config/valuation.yaml",
+                "recommendation_v2_config_path": "recommendation.yaml",
+            },
+        ),
+        ("format", result, {"show_recommendation_v2": True}),
+    ]
+    assert capsys.readouterr().out == "BATCH REC V2\n"
+
+
+def test_positional_multi_symbol_ranking_uses_batch_symbol_service(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    result = BatchStockAnalysisResult(("MU", "NVDA"), (object(), object()), ())
+    calls = []
+    monkeypatch.setattr(
+        main_module,
+        "analyze_symbol_list_from_config_files",
+        lambda **kwargs: calls.append(("analyze", kwargs)) or result,
+    )
+    monkeypatch.setattr(
+        main_module,
+        "format_batch_stock_analysis_report",
+        lambda value, **kwargs: calls.append(("format", value, kwargs)) or "RANKING",
+    )
+
+    assert (
+        main_module.main(
+            [
+                "MU",
+                "NVDA",
+                "--recommendation-v2-config",
+                "recommendation.yaml",
+                "--ranking-config",
+                "ranking.yaml",
+                "--show-ranking",
+            ]
+        )
+        == 0
+    )
+
+    assert calls == [
+        (
+            "analyze",
+            {
+                "symbols": ["MU", "NVDA"],
+                "valuation_config_path": "config/valuation.yaml",
+                "recommendation_v2_config_path": "recommendation.yaml",
+                "ranking_config_path": "ranking.yaml",
+            },
+        ),
+        ("format", result, {"show_ranking": True}),
+    ]
+    assert capsys.readouterr().out == "RANKING\n"
+
+
+def test_positional_multi_symbol_ranking_with_profiles_uses_profile_batch(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    result = BatchStockAnalysisResult(("MU", "NVDA"), (object(), object()), ())
+    calls = []
+    monkeypatch.setattr(
+        main_module,
+        "analyze_symbol_list_with_profiles_from_config_files",
+        lambda **kwargs: calls.append(kwargs) or result,
+    )
+    monkeypatch.setattr(main_module, "format_batch_stock_analysis_report", lambda value, **kwargs: "RANK")
+
+    assert (
+        main_module.main(
+            [
+                "MU",
+                "NVDA",
+                "--profiles",
+                "profiles.yaml",
+                "--recommendation-v2-config",
+                "recommendation.yaml",
+                "--ranking-config",
+                "ranking.yaml",
+                "--show-ranking-details",
+            ]
+        )
+        == 0
+    )
+
+    assert calls == [
+        {
+            "symbols": ["MU", "NVDA"],
+            "valuation_config_path": "config/valuation.yaml",
+            "profiles_path": "profiles.yaml",
+            "recommendation_v2_config_path": "recommendation.yaml",
+            "ranking_config_path": "ranking.yaml",
+        }
+    ]
+    assert capsys.readouterr().out == "RANK\n"
+
+
+def test_ranking_csv_and_json_options_pass_formatter_options(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    result = BatchStockAnalysisResult(("MU", "NVDA"), (object(), object()), ())
+    calls = []
+    monkeypatch.setattr(main_module, "analyze_symbol_list_from_config_files", lambda **kwargs: result)
+    monkeypatch.setattr(
+        main_module,
+        "format_batch_stock_analysis_report",
+        lambda value, **kwargs: calls.append(kwargs) or "SERIALIZED",
+    )
+
+    assert (
+        main_module.main(
+            [
+                "MU",
+                "NVDA",
+                "--recommendation-v2-config",
+                "recommendation.yaml",
+                "--ranking-config",
+                "ranking.yaml",
+                "--show-ranking",
+                "--ranking-format",
+                "csv",
+            ]
+        )
+        == 0
+    )
+
+    assert calls == [{"show_ranking": True, "ranking_format": "csv"}]
+    assert capsys.readouterr().out == "SERIALIZED\n"
+
+
+def test_ranking_options_require_config_and_multiple_symbols() -> None:
+    with pytest.raises(SystemExit) as exc_info:
+        main_module.main(["MU", "NVDA", "--show-ranking"])
+
+    assert exc_info.value.code == 2
+
+    with pytest.raises(SystemExit) as exc_info:
+        main_module.main(
+            [
+                "MU",
+                "--recommendation-v2-config",
+                "recommendation.yaml",
+                "--ranking-config",
+                "ranking.yaml",
+                "--show-ranking",
+            ]
+        )
+
+    assert exc_info.value.code == 2
+
+
+def test_show_recommendation_v2_requires_config() -> None:
+    with pytest.raises(SystemExit) as exc_info:
+        main_module.main(["MU", "--show-recommendation-v2"])
+
+    assert exc_info.value.code == 2
+
+
+def test_inspect_eps_rejects_recommendation_v2_options() -> None:
+    with pytest.raises(SystemExit) as exc_info:
+        main_module.main(["MU", "--inspect-eps", "--recommendation-v2-config", "recommendation.yaml"])
+
+    assert exc_info.value.code == 2
+
+    with pytest.raises(SystemExit) as exc_info:
+        main_module.main(["MU", "--inspect-eps", "--show-recommendation-v2"])
+
+    assert exc_info.value.code == 2

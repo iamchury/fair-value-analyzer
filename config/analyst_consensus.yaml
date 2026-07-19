@@ -1,13 +1,12 @@
 defaults:
   enabled: true
-  fair_value_method: weighted_mean_midpoint
+  valuation_method: weighted_mean_midpoint
   mean_weight: 0.70
   midpoint_weight: 0.30
-  apply_treasury_multiplier: false
-  low_dispersion_threshold_percent: 25.0
-  medium_dispersion_threshold_percent: 60.0
-  extreme_dispersion_threshold_percent: 100.0
-  stale_after_days: 180
+  apply_treasury: false
+  low_dispersion: 25.0
+  medium_dispersion: 60.0
+  high_dispersion: 100.0
 
 symbols:
   MU:

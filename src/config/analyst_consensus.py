@@ -12,24 +12,46 @@ class AnalystConsensusConfigurationError(ValueError):
     pass
 
 
-class AnalystFairValueMethod(str, Enum):
+class AnalystValuationMethod(str, Enum):
     MEAN = "MEAN"
     MIDPOINT = "MIDPOINT"
     WEIGHTED_MEAN_MIDPOINT = "WEIGHTED_MEAN_MIDPOINT"
 
 
+AnalystFairValueMethod = AnalystValuationMethod
+
+
 @dataclass(frozen=True)
 class AnalystConsensusRule:
     enabled: bool
-    fair_value_method: AnalystFairValueMethod
+    valuation_method: AnalystValuationMethod
     mean_weight: float
     midpoint_weight: float
-    apply_treasury_multiplier: bool
-    low_dispersion_threshold_percent: float
-    medium_dispersion_threshold_percent: float
-    extreme_dispersion_threshold_percent: float
-    stale_after_days: int
+    apply_treasury: bool
+    low_dispersion: float
+    medium_dispersion: float
+    high_dispersion: float
     rationale: str | None
+
+    @property
+    def fair_value_method(self) -> AnalystValuationMethod:
+        return self.valuation_method
+
+    @property
+    def apply_treasury_multiplier(self) -> bool:
+        return self.apply_treasury
+
+    @property
+    def low_dispersion_threshold_percent(self) -> float:
+        return self.low_dispersion
+
+    @property
+    def medium_dispersion_threshold_percent(self) -> float:
+        return self.medium_dispersion
+
+    @property
+    def extreme_dispersion_threshold_percent(self) -> float:
+        return self.high_dispersion
 
 
 @dataclass(frozen=True)
@@ -107,62 +129,69 @@ def _parse_rule(
 ) -> AnalystConsensusRule:
     required = set() if fallback is not None else {
         "enabled",
-        "fair_value_method",
+        "valuation_method",
         "mean_weight",
         "midpoint_weight",
-        "apply_treasury_multiplier",
-        "low_dispersion_threshold_percent",
-        "medium_dispersion_threshold_percent",
-        "extreme_dispersion_threshold_percent",
-        "stale_after_days",
+        "apply_treasury",
+        "low_dispersion",
+        "medium_dispersion",
+        "high_dispersion",
     }
     optional = {
         "enabled",
+        "valuation_method",
         "fair_value_method",
         "mean_weight",
         "midpoint_weight",
+        "apply_treasury",
         "apply_treasury_multiplier",
+        "low_dispersion",
+        "medium_dispersion",
+        "high_dispersion",
         "low_dispersion_threshold_percent",
         "medium_dispersion_threshold_percent",
         "extreme_dispersion_threshold_percent",
-        "stale_after_days",
         "rationale",
     } - required
     _validate_allowed_keys(rule, required, optional, path)
     base = fallback
     enabled = _optional_bool(rule, "enabled", path, base.enabled if base else None)
-    method = _optional_method(rule, "fair_value_method", path, base.fair_value_method if base else None)
+    method = _optional_method(
+        rule,
+        "valuation_method",
+        path,
+        base.valuation_method if base else None,
+        alias="fair_value_method",
+    )
     mean_weight = _optional_weight(rule, "mean_weight", path, base.mean_weight if base else None)
     midpoint_weight = _optional_weight(rule, "midpoint_weight", path, base.midpoint_weight if base else None)
     apply_treasury = _optional_bool(
         rule,
-        "apply_treasury_multiplier",
+        "apply_treasury",
         path,
-        base.apply_treasury_multiplier if base else None,
+        base.apply_treasury if base else None,
+        alias="apply_treasury_multiplier",
     )
     low = _optional_positive_number(
         rule,
-        "low_dispersion_threshold_percent",
+        "low_dispersion",
         path,
-        base.low_dispersion_threshold_percent if base else None,
+        base.low_dispersion if base else None,
+        alias="low_dispersion_threshold_percent",
     )
     medium = _optional_positive_number(
         rule,
-        "medium_dispersion_threshold_percent",
+        "medium_dispersion",
         path,
-        base.medium_dispersion_threshold_percent if base else None,
+        base.medium_dispersion if base else None,
+        alias="medium_dispersion_threshold_percent",
     )
-    extreme = _optional_positive_number(
+    high = _optional_positive_number(
         rule,
-        "extreme_dispersion_threshold_percent",
+        "high_dispersion",
         path,
-        base.extreme_dispersion_threshold_percent if base else None,
-    )
-    stale = _optional_int(
-        rule,
-        "stale_after_days",
-        path,
-        base.stale_after_days if base else None,
+        base.high_dispersion if base else None,
+        alias="extreme_dispersion_threshold_percent",
     )
     rationale = _optional_string(
         rule.get("rationale", base.rationale if base else None),
@@ -172,28 +201,23 @@ def _parse_rule(
         raise AnalystConsensusConfigurationError(
             f"{path}: mean_weight and midpoint_weight must sum to 1.0."
         )
-    if not (low < medium < extreme):
+    if not (low < medium < high):
         raise AnalystConsensusConfigurationError(
             f"{path}: dispersion thresholds must be strictly increasing."
         )
-    if extreme > 1000:
+    if high > 1000:
         raise AnalystConsensusConfigurationError(
-            f"{path}.extreme_dispersion_threshold_percent must be no more than 1000."
-        )
-    if not 1 <= stale <= 3650:
-        raise AnalystConsensusConfigurationError(
-            f"{path}.stale_after_days must be between 1 and 3650."
+            f"{path}.high_dispersion must be no more than 1000."
         )
     return AnalystConsensusRule(
         enabled=enabled,
-        fair_value_method=method,
+        valuation_method=method,
         mean_weight=mean_weight,
         midpoint_weight=midpoint_weight,
-        apply_treasury_multiplier=apply_treasury,
-        low_dispersion_threshold_percent=low,
-        medium_dispersion_threshold_percent=medium,
-        extreme_dispersion_threshold_percent=extreme,
-        stale_after_days=stale,
+        apply_treasury=apply_treasury,
+        low_dispersion=low,
+        medium_dispersion=medium,
+        high_dispersion=high,
         rationale=rationale,
     )
 
@@ -225,28 +249,30 @@ def _normalize_symbol(value: object, path: str) -> str:
     return symbol
 
 
-def _optional_method(mapping, key, path, fallback):
-    if key not in mapping:
+def _optional_method(mapping, key, path, fallback, alias=None):
+    present_key = _present_key(mapping, key, alias)
+    if present_key is None:
         if fallback is None:
             raise AnalystConsensusConfigurationError(f"{path}.{key} is required.")
         return fallback
-    value = mapping[key]
+    value = mapping[present_key]
     if isinstance(value, bool) or not isinstance(value, str):
-        raise AnalystConsensusConfigurationError(f"{path}.{key} must be a string.")
+        raise AnalystConsensusConfigurationError(f"{path}.{present_key} must be a string.")
     try:
-        return AnalystFairValueMethod(value.strip().upper())
+        return AnalystValuationMethod(value.strip().upper())
     except ValueError as exc:
-        raise AnalystConsensusConfigurationError(f"{path}.{key} is not supported.") from exc
+        raise AnalystConsensusConfigurationError(f"{path}.{present_key} is not supported.") from exc
 
 
-def _optional_bool(mapping, key, path, fallback):
-    if key not in mapping:
+def _optional_bool(mapping, key, path, fallback, alias=None):
+    present_key = _present_key(mapping, key, alias)
+    if present_key is None:
         if fallback is None:
             raise AnalystConsensusConfigurationError(f"{path}.{key} is required.")
         return fallback
-    if not isinstance(mapping[key], bool):
-        raise AnalystConsensusConfigurationError(f"{path}.{key} must be a boolean.")
-    return mapping[key]
+    if not isinstance(mapping[present_key], bool):
+        raise AnalystConsensusConfigurationError(f"{path}.{present_key} must be a boolean.")
+    return mapping[present_key]
 
 
 def _optional_weight(mapping, key, path, fallback):
@@ -256,35 +282,33 @@ def _optional_weight(mapping, key, path, fallback):
     return value
 
 
-def _optional_positive_number(mapping, key, path, fallback):
-    value = _optional_number(mapping, key, path, fallback)
+def _optional_positive_number(mapping, key, path, fallback, alias=None):
+    value = _optional_number(mapping, key, path, fallback, alias)
     if value <= 0:
         raise AnalystConsensusConfigurationError(f"{path}.{key} must be greater than 0.")
     return value
 
 
-def _optional_number(mapping, key, path, fallback):
-    if key not in mapping:
+def _optional_number(mapping, key, path, fallback, alias=None):
+    present_key = _present_key(mapping, key, alias)
+    if present_key is None:
         if fallback is None:
             raise AnalystConsensusConfigurationError(f"{path}.{key} is required.")
         return fallback
-    value = mapping[key]
+    value = mapping[present_key]
     if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise AnalystConsensusConfigurationError(f"{path}.{key} must be a finite number.")
+        raise AnalystConsensusConfigurationError(f"{path}.{present_key} must be a finite number.")
     if not isfinite(value):
-        raise AnalystConsensusConfigurationError(f"{path}.{key} must be finite.")
+        raise AnalystConsensusConfigurationError(f"{path}.{present_key} must be finite.")
     return float(value)
 
 
-def _optional_int(mapping, key, path, fallback):
-    if key not in mapping:
-        if fallback is None:
-            raise AnalystConsensusConfigurationError(f"{path}.{key} is required.")
-        return fallback
-    value = mapping[key]
-    if isinstance(value, bool) or not isinstance(value, int):
-        raise AnalystConsensusConfigurationError(f"{path}.{key} must be an integer.")
-    return value
+def _present_key(mapping, key, alias):
+    if key in mapping:
+        return key
+    if alias is not None and alias in mapping:
+        return alias
+    return None
 
 
 def _optional_string(value: object, path: str) -> str | None:

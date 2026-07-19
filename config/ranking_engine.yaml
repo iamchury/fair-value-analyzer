@@ -1,0 +1,19 @@
+enabled: true
+
+weights:
+  valuation: 45
+  recommendation: 20
+  evidence: 15
+  agreement: 10
+  momentum: 10
+
+momentum_reference_display:
+  enabled: true
+  near_reference_pct: 3
+  well_above_reference_pct: 10
+  well_below_reference_pct: -10
+  show_reference_date: true
+  show_cross_direction: true
+  show_current_rsi: true
+  show_price_difference: true
+  affect_ranking_score: false

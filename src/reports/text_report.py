@@ -16,6 +16,10 @@ _EXPLANATION_WIDTH = 76
 def format_stock_analysis_report(
     result: StockAnalysisServiceResult,
     show_snapshots: bool = False,
+    show_agreement: bool = False,
+    show_momentum: bool = False,
+    show_range: bool = False,
+    show_recommendation_v2: bool = False,
 ) -> str:
     """Format a stock analysis service result as deterministic plain text."""
     company = result.company
@@ -328,25 +332,19 @@ def format_stock_analysis_report(
                         _row(
                             "Analyst Fair Value",
                             _format_currency(
-                                _getattr_or_none(
-                                    analyst,
-                                    "adjusted_analyst_fair_value",
-                                ),
+                                _getattr_or_none(analyst, "selected_fair_value"),
                                 currency,
                             ),
                         ),
                         _row(
-                            "Analyst Quality",
-                            _getattr_or_none(analyst, "consensus_quality"),
+                            "Analyst Confidence",
+                            _getattr_or_none(analyst, "confidence"),
                         ),
                         _row(
                             "Analyst - Automatic",
                             _format_currency(
                                 _difference(
-                                    _getattr_or_none(
-                                        analyst,
-                                        "adjusted_analyst_fair_value",
-                                    ),
+                                    _getattr_or_none(analyst, "selected_fair_value"),
                                     _getattr_or_none(
                                         comparison,
                                         "automatic_fair_value",
@@ -359,10 +357,7 @@ def format_stock_analysis_report(
                             "Analyst - Research",
                             _format_currency(
                                 _difference(
-                                    _getattr_or_none(
-                                        analyst,
-                                        "adjusted_analyst_fair_value",
-                                    ),
+                                    _getattr_or_none(analyst, "selected_fair_value"),
                                     _getattr_or_none(
                                         comparison,
                                         "research_fair_value",
@@ -381,6 +376,22 @@ def format_stock_analysis_report(
         _extend_snapshot_report(
             lines,
             getattr(result, "valuation_snapshots", None),
+            currency,
+        )
+    if show_agreement:
+        _extend_agreement_report(
+            lines,
+            getattr(result, "agreement_result", None),
+            currency,
+        )
+    if show_momentum:
+        _extend_momentum_report(lines, getattr(result, "momentum_reference", None), currency)
+    if show_range:
+        _extend_range_report(lines, getattr(result, "fair_value_range", None), currency)
+    if show_recommendation_v2:
+        _extend_recommendation_v2_report(
+            lines,
+            getattr(result, "recommendation_v2", None),
             currency,
         )
 
@@ -448,36 +459,24 @@ def _extend_industry_policy(lines: list[str], policy: Any) -> None:
 
 
 def _extend_analyst_consensus(lines: list[str], analyst: Any, currency: str | None) -> None:
+    metrics = getattr(analyst, "metrics", {})
     lines.extend(
         [
             "",
             "ANALYST CONSENSUS MODEL",
             _SECTION_LINE,
-            _row("Status", analyst.status),
-            _row("Fair Value Method", analyst.fair_value_method),
-            _row("Analyst Count", analyst.analyst_count),
-            _row("Target Mean", _format_currency(analyst.target_mean, currency)),
-            _row("Target High", _format_currency(analyst.target_high, currency)),
-            _row("Target Low", _format_currency(analyst.target_low, currency)),
-            _row("Target Midpoint", _format_currency(analyst.target_midpoint, currency)),
-            _row("Target Range", _format_currency(analyst.target_range, currency)),
-            _row("Dispersion", _format_percent(analyst.dispersion_percent)),
-            _row("Dispersion Level", analyst.dispersion_level),
-            _row("Consensus Quality", analyst.consensus_quality),
-            _row("Mean Upside", _format_percent(analyst.mean_upside_percent)),
-            _row("Low Upside", _format_percent(analyst.low_upside_percent)),
-            _row("High Upside", _format_percent(analyst.high_upside_percent)),
+            _row("Mean Target", _format_currency(_mapping_get(metrics, "target_mean"), currency)),
+            _row("High Target", _format_currency(_mapping_get(metrics, "target_high"), currency)),
+            _row("Low Target", _format_currency(_mapping_get(metrics, "target_low"), currency)),
+            _row("Midpoint", _format_currency(_mapping_get(metrics, "target_midpoint"), currency)),
+            _row("Dispersion", _format_percent(_mapping_get(metrics, "dispersion_percent"))),
+            _row("Classification", _mapping_get(metrics, "dispersion_classification")),
+            _row("Confidence", analyst.confidence),
             _row(
-                "Raw Analyst Fair Value",
-                _format_currency(analyst.raw_analyst_fair_value, currency),
+                "Selected Analyst FV",
+                _format_currency(analyst.selected_fair_value, currency),
             ),
-            _row("Treasury Applied", _format_yes_no(analyst.treasury_applied)),
-            _row(
-                "Analyst Fair Value",
-                _format_currency(analyst.adjusted_analyst_fair_value, currency),
-            ),
-            _row("Analyst Target As Of", analyst.analyst_target_as_of),
-            _row("Retrieved At", analyst.retrieved_at),
+            _row("Treasury Applied", _format_yes_no(_mapping_get(metrics, "treasury_applied"))),
             _row("Rationale", analyst.rationale),
         ]
     )
@@ -485,6 +484,12 @@ def _extend_analyst_consensus(lines: list[str], analyst: Any, currency: str | No
         lines.extend(["", "ANALYST WARNINGS", _SECTION_LINE])
         for warning in analyst.warnings:
             lines.append(f"- {warning}")
+
+
+def _mapping_get(mapping: Any, key: str) -> Any:
+    if mapping is None:
+        return None
+    return mapping.get(key)
 
 
 def _extend_snapshot_report(lines: list[str], collection: Any, currency: str | None) -> None:
@@ -551,6 +556,225 @@ def _extend_snapshot_report(lines: list[str], collection: Any, currency: str | N
             lines.append(_row("Warnings", "; ".join(snapshot.warnings)))
 
 
+def _extend_agreement_report(lines: list[str], agreement: Any, currency: str | None) -> None:
+    if agreement is None:
+        lines.extend(
+            [
+                "",
+                "MODEL AGREEMENT ANALYSIS",
+                _SECTION_LINE,
+                "No agreement analysis available.",
+            ]
+        )
+        return
+
+    cluster = agreement.intrinsic_cluster
+    lines.extend(
+        [
+            "",
+            "MODEL AGREEMENT ANALYSIS",
+            _SECTION_LINE,
+            _row("Core Intrinsic Agreement", agreement.core_intrinsic_agreement),
+            _row("Extended Agreement", agreement.extended_intrinsic_agreement),
+            _row("Overall Agreement", agreement.overall_agreement),
+            _row(
+                "Intrinsic Cluster Median",
+                _format_currency(cluster.median_value, currency),
+            ),
+            _row(
+                "Intrinsic Cluster Range",
+                _format_currency_range(cluster.minimum_value, cluster.maximum_value, currency),
+            ),
+            _row("Intrinsic Spread", _format_percent(cluster.spread_percentage)),
+            _row("Usable Models", str(len(agreement.model_outliers))),
+            _row(
+                "Primary Intrinsic Models",
+                str(_count_cluster_members(cluster.member_values, "INTRINSIC_VALUE")),
+            ),
+            _row(
+                "Reference Models",
+                str(_count_cluster_members(cluster.member_values, "REFERENCE_VALUE")),
+            ),
+            _row("Market Expectation Models", str(len(agreement.market_expectation_analyses))),
+            "",
+            "PAIRWISE MODEL AGREEMENT",
+            _SECTION_LINE,
+            f"{'Model A':<20} {'Model B':<20} {'Difference':>11}  {'Relationship':<20}",
+        ]
+    )
+    for comparison in agreement.pairwise_comparisons:
+        lines.append(
+            f"{_format_optional_text(comparison.model_a):<20} "
+            f"{_format_optional_text(comparison.model_b):<20} "
+            f"{_format_percent(comparison.percentage_difference):>11}  "
+            f"{_format_optional_text(comparison.relationship):<20}"
+        )
+
+    lines.extend(
+        [
+            "",
+            "MODEL OUTLIERS",
+            _SECTION_LINE,
+            f"{'Model':<20} {'Value':>12} {'vs Median':>12} {'Difference':>11}  {'Status':<18}",
+        ]
+    )
+    for outlier in agreement.model_outliers:
+        lines.append(
+            f"{_format_optional_text(outlier.model_type):<20} "
+            f"{_format_number(outlier.value):>12} "
+            f"{_format_number(outlier.comparison_median):>12} "
+            f"{_format_percent(outlier.difference_percentage):>11}  "
+            f"{_format_optional_text(outlier.status):<18}"
+        )
+
+    lines.extend(["", "MARKET EXPECTATION VS INTRINSIC VALUE", _SECTION_LINE])
+    for analysis in agreement.market_expectation_analyses:
+        lines.extend(
+            [
+                _row("Model", analysis.model_type),
+                _row(
+                    "Market Expectation",
+                    _format_currency(analysis.selected_value, currency),
+                ),
+                _row("Intrinsic Median", _format_currency(analysis.intrinsic_median, currency)),
+                _row("Difference", _format_currency(analysis.absolute_difference, currency)),
+                _row("Difference Percentage", _format_percent(analysis.percentage_difference)),
+                _row("Direction", analysis.direction),
+                _row("Outlier Status", analysis.outlier_status),
+                _row("Model Confidence", analysis.confidence),
+            ]
+        )
+
+    lines.extend(["", "RATIONALE", _SECTION_LINE])
+    lines.extend(agreement.rationale or ("N/A",))
+    if agreement.warnings:
+        lines.extend(["", "AGREEMENT WARNINGS", _SECTION_LINE])
+        for warning in agreement.warnings:
+            lines.append(f"- {warning}")
+
+
+def _extend_momentum_report(lines: list[str], momentum: Any, currency: str | None) -> None:
+    lines.extend(["", "MARKET MOMENTUM REFERENCE", _SECTION_LINE])
+    if momentum is None:
+        lines.append("No market momentum reference available.")
+        return
+    lines.extend(
+        [
+            _row("RSI Period", str(momentum.rsi_period)),
+            _row("Current RSI", _format_number(momentum.current_rsi)),
+            _row("Neutral RSI Level", _format_number(momentum.neutral_level)),
+            _row("Reference Type", momentum.cross_direction),
+            _row("RSI 50 Reference Date", momentum.reference_date),
+            _row("RSI at Reference", _format_number(momentum.reference_rsi)),
+            _row("RSI 50 Reference Price", _format_currency(momentum.reference_price, currency)),
+            _row("Current Price", _format_currency(momentum.current_price, currency)),
+            _row("Price vs Reference", _format_signed_currency(momentum.price_change_since_reference, currency)),
+            _row("Change vs Reference", _format_signed_percent(momentum.price_change_since_reference_pct)),
+            _row("Trading Days Since", _format_int(momentum.trading_days_since_reference)),
+            _row("Price Field Used", momentum.price_field),
+            _row("Status", momentum.status),
+            _row("Rationale", momentum.rationale),
+        ]
+    )
+    if momentum.warnings:
+        lines.extend(["", "MOMENTUM WARNINGS", _SECTION_LINE])
+        for warning in momentum.warnings:
+            lines.append(f"- {warning}")
+
+
+def _extend_range_report(lines: list[str], fair_range: Any, currency: str | None) -> None:
+    lines.extend(["", "FAIR VALUE RANGE", _SECTION_LINE])
+    if fair_range is None:
+        lines.append("No fair value range available.")
+        return
+    lines.extend(
+        [
+            _row("Conservative Value", _format_currency(fair_range.conservative_value, currency)),
+            _row("Base Value", _format_currency(fair_range.base_value, currency)),
+            _row("Optimistic Intrinsic", _format_currency(fair_range.optimistic_intrinsic_value, currency)),
+            _row("Intrinsic Range", _format_currency_range(fair_range.intrinsic_floor, fair_range.intrinsic_ceiling, currency)),
+            _row("Intrinsic Range Width", _format_currency(fair_range.intrinsic_range_width, currency)),
+            _row("Range Width Percentage", _format_percent(fair_range.intrinsic_range_width_pct)),
+            _row("Agreement", fair_range.agreement_level),
+            _row("Market Position", fair_range.market_position),
+            "",
+            "CURRENT PRICE VS RANGE",
+            _SECTION_LINE,
+            _row("Current Price", _format_currency(fair_range.current_price, currency)),
+            _row("vs Conservative", _format_signed_percent(fair_range.current_vs_conservative_pct)),
+            _row("vs Base", _format_signed_percent(fair_range.current_vs_base_pct)),
+            _row("vs Optimistic Intrinsic", _format_signed_percent(fair_range.current_vs_optimistic_pct)),
+            "",
+            "MARKET EXPECTATION",
+            _SECTION_LINE,
+            _row("Analyst Expectation", _format_currency(fair_range.market_expectation_value, currency)),
+            _row("Analyst vs Base", _format_signed_percent(_difference_pct(fair_range.market_expectation_value, fair_range.base_value))),
+            _row("Analyst Confidence", fair_range.market_expectation_confidence),
+            _row("Analyst Outlier", fair_range.market_expectation_outlier_status),
+            "",
+            "MOMENTUM CONTEXT",
+            _SECTION_LINE,
+            _row("Current RSI", _format_number(fair_range.momentum_current_rsi)),
+            _row("RSI 50 Reference Date", fair_range.momentum_reference_date),
+            _row("RSI 50 Reference Price", _format_currency(fair_range.momentum_reference_price, currency)),
+            _row("RSI 50 Cross Direction", fair_range.momentum_cross_direction),
+            _row("Current vs RSI 50 Price", _format_signed_currency(fair_range.current_vs_momentum_reference, currency)),
+            _row("Change vs RSI 50 Price", _format_signed_percent(fair_range.current_vs_momentum_reference_pct)),
+            "",
+            "RATIONALE",
+            _SECTION_LINE,
+        ]
+    )
+    lines.extend(fair_range.rationale or ("N/A",))
+    if fair_range.warnings:
+        lines.extend(["", "RANGE WARNINGS", _SECTION_LINE])
+        for warning in fair_range.warnings:
+            lines.append(f"- {warning}")
+
+
+def _extend_recommendation_v2_report(lines: list[str], recommendation: Any, currency: str | None) -> None:
+    lines.extend(["", "RECOMMENDATION V2", _SECTION_LINE])
+    if recommendation is None:
+        lines.append("No Recommendation V2 result available.")
+        return
+    lines.extend(
+        [
+            _row("Decision", recommendation.decision),
+            _row("Valuation Condition", recommendation.valuation_condition),
+            _row("Momentum Condition", recommendation.momentum_condition),
+            _row("Evidence Quality", recommendation.evidence_quality),
+            _row("Core Agreement", recommendation.core_agreement),
+            _row("Current Price", _format_currency(recommendation.current_price, currency)),
+            _row("Base Intrinsic Value", _format_currency(recommendation.base_value, currency)),
+            _row("Current vs Base", _format_signed_percent(recommendation.current_vs_base_pct)),
+            _row("Current RSI", _format_number(recommendation.current_rsi)),
+            _row("RSI 50 Reference Price", _format_currency(recommendation.rsi_reference_price, currency)),
+            _row("Current vs RSI Reference", _format_signed_percent(recommendation.current_vs_rsi_reference_pct)),
+            _row("Analyst Expectation", _format_currency(recommendation.analyst_expectation, currency)),
+            _row("Analyst Outlier", recommendation.analyst_outlier_status),
+            _row("Analyst Confidence", recommendation.analyst_confidence),
+            "",
+            "RECOMMENDATION COMPARISON",
+            _SECTION_LINE,
+            _row("Legacy Recommendation", recommendation.legacy_recommendation),
+            _row("Recommendation V2", recommendation.decision),
+            _row("Alignment", recommendation.alignment),
+            "",
+            "RATIONALE",
+            _SECTION_LINE,
+        ]
+    )
+    lines.extend(recommendation.rationale or ("N/A",))
+    if recommendation.warnings:
+        lines.extend(["", "RECOMMENDATION V2 WARNINGS", _SECTION_LINE])
+        for warning in recommendation.warnings:
+            lines.append(f"- {warning}")
+
+
+def _count_cluster_members(members: Any, value_type: str) -> int:
+    return sum(1 for member in members if _format_optional_text(member.value_type) == value_type)
+
+
 def _row(label: str, value: Any) -> str:
     return f"{label:<{_LABEL_WIDTH}}: {_format_value(value)}"
 
@@ -587,6 +811,18 @@ def _format_signed_percent(value: Any, decimal_places: int = 2) -> str:
     if value is None:
         return "N/A"
     return f"{value:+.{decimal_places}f}%"
+
+
+def _format_signed_currency(value: Any, currency: str | None) -> str:
+    if value is None:
+        return "N/A"
+    return f"{_format_signed_number(value)} {_format_optional_text(currency)}"
+
+
+def _format_int(value: Any) -> str:
+    if value is None:
+        return "N/A"
+    return str(value)
 
 
 def _format_yes_no(value: bool | None) -> str:
@@ -646,6 +882,14 @@ def _difference(left: Any, right: Any) -> float | None:
     if left is None or right is None:
         return None
     return left - right
+
+
+def _difference_pct(left: Any, right: Any) -> float | None:
+    if left is None or right is None or right == 0:
+        return None
+    return (left - right) / right * 100
+
+
 
 
 def _enum_value(value: Any) -> str:

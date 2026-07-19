@@ -341,11 +341,13 @@ def build_valuation_snapshot_collection(
         create_automatic_per_snapshot(stock_analysis_result, generated),
         create_research_per_snapshot(stock_analysis_result, generated),
         create_dcf_reference_snapshot(stock_analysis_result, generated),
+        _getattr(stock_analysis_result, "analyst_consensus"),
     )
     snapshots = tuple(
         snapshot
         for snapshot in candidates
-        if snapshot.status != ValuationSnapshotStatus.UNAVAILABLE
+        if isinstance(snapshot, ValuationSnapshot)
+        and snapshot.status != ValuationSnapshotStatus.UNAVAILABLE
     )
     symbol = (
         _getattr(_getattr(stock_analysis_result, "valuation"), "symbol")

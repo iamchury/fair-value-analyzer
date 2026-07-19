@@ -5,8 +5,17 @@ from datetime import datetime, timezone
 
 from src.analysis.analyst_consensus import (
     AnalystConsensusInputs,
-    AnalystConsensusResult,
     calculate_analyst_consensus,
+)
+from src.analysis.agreement_engine import AgreementResult, analyze_agreement
+from src.analysis.fair_value_range import FairValueRangeResult, calculate_fair_value_range
+from src.analysis.momentum_reference import (
+    RsiMomentumReference,
+    calculate_rsi_momentum_reference,
+)
+from src.analysis.recommendation_v2 import (
+    RecommendationV2Result,
+    calculate_recommendation_v2,
 )
 from src.analysis.eps_selection import (
     EPSSelectionInputs,
@@ -28,6 +37,7 @@ from src.analysis.stock_valuation import (
     calculate_stock_valuation,
 )
 from src.analysis.valuation_snapshot import (
+    ValuationSnapshot,
     ValuationSnapshotCollection,
     build_valuation_snapshot_collection,
 )
@@ -39,6 +49,22 @@ from src.config.analyst_consensus import (
     AnalystConsensusConfiguration,
     get_analyst_consensus_rule,
     load_analyst_consensus_configuration,
+)
+from src.config.agreement_engine import (
+    AgreementEngineConfiguration,
+    load_agreement_engine_configuration,
+)
+from src.config.fair_value_range import (
+    FairValueRangeConfiguration,
+    load_fair_value_range_configuration,
+)
+from src.config.recommendation_v2 import (
+    RecommendationV2Configuration,
+    load_recommendation_v2_configuration,
+)
+from src.config.momentum_reference import (
+    MomentumReferenceConfiguration,
+    load_momentum_reference_configuration,
 )
 from src.config.industry_policies import (
     IndustryPolicyConfiguration,
@@ -60,6 +86,7 @@ from src.yahoo.company import (
     download_company_fundamentals_with_eps_snapshot,
     normalize_symbol,
 )
+from src.yahoo.prices import download_daily_price_history
 from src.yahoo.treasury import TreasuryYieldSnapshot, download_treasury_yield_snapshot
 
 
@@ -74,8 +101,12 @@ class StockAnalysisServiceResult:
     valuation: StockValuationResult
     eps_selection: EPSSelectionResult | None = None
     industry_policy: object | None = None
-    analyst_consensus: AnalystConsensusResult | None = None
+    analyst_consensus: ValuationSnapshot | None = None
     valuation_snapshots: ValuationSnapshotCollection | None = None
+    agreement_result: AgreementResult | None = None
+    momentum_reference: RsiMomentumReference | None = None
+    fair_value_range: FairValueRangeResult | None = None
+    recommendation_v2: RecommendationV2Result | None = None
 
 
 @dataclass(frozen=True)
@@ -88,8 +119,12 @@ class StockAnalysisWithProfileResult:
     valuation_comparison: ValuationComparisonResult | None
     eps_selection: EPSSelectionResult | None = None
     industry_policy: object | None = None
-    analyst_consensus: AnalystConsensusResult | None = None
+    analyst_consensus: ValuationSnapshot | None = None
     valuation_snapshots: ValuationSnapshotCollection | None = None
+    agreement_result: AgreementResult | None = None
+    momentum_reference: RsiMomentumReference | None = None
+    fair_value_range: FairValueRangeResult | None = None
+    recommendation_v2: RecommendationV2Result | None = None
 
 
 def normalize_service_symbol(symbol: str) -> str:
@@ -148,6 +183,10 @@ def analyze_stock(
     eps_selection_config: EPSSelectionConfiguration | None = None,
     industry_policy_config: IndustryPolicyConfiguration | None = None,
     analyst_consensus_config: AnalystConsensusConfiguration | None = None,
+    agreement_config: AgreementEngineConfiguration | None = None,
+    momentum_config: MomentumReferenceConfiguration | None = None,
+    range_config: FairValueRangeConfiguration | None = None,
+    recommendation_v2_config: RecommendationV2Configuration | None = None,
 ) -> StockAnalysisServiceResult:
     normalized_symbol = normalize_service_symbol(symbol)
     eps_selection = None
@@ -184,6 +223,25 @@ def analyze_stock(
         industry_policy=getattr(valuation, "industry_policy", None),
         analyst_consensus=analyst_consensus,
     )
+    snapshots = _build_valuation_snapshots_or_none(service_result)
+    agreement = _build_agreement_or_none(snapshots, agreement_config)
+    momentum = _build_momentum_reference_or_none(normalized_symbol, momentum_config)
+    fair_value_range = _build_fair_value_range_or_none(
+        snapshots,
+        agreement,
+        company.current_price,
+        range_config,
+        momentum,
+    )
+    recommendation_v2 = _build_recommendation_v2_or_none(
+        normalized_symbol,
+        recommendation_v2_config,
+        fair_value_range,
+        agreement,
+        momentum,
+        snapshots,
+        getattr(getattr(valuation, "valuation_decision", None), "recommendation", None),
+    )
     return StockAnalysisServiceResult(
         company=service_result.company,
         treasury=service_result.treasury,
@@ -191,7 +249,11 @@ def analyze_stock(
         eps_selection=service_result.eps_selection,
         industry_policy=service_result.industry_policy,
         analyst_consensus=service_result.analyst_consensus,
-        valuation_snapshots=_build_valuation_snapshots_or_none(service_result),
+        valuation_snapshots=snapshots,
+        agreement_result=agreement,
+        momentum_reference=momentum,
+        fair_value_range=fair_value_range,
+        recommendation_v2=recommendation_v2,
     )
 
 
@@ -201,6 +263,10 @@ def analyze_stock_from_config_file(
     eps_selection_path: str | Path | None = None,
     industry_policies_path: str | Path | None = None,
     analyst_consensus_path: str | Path | None = None,
+    agreement_config_path: str | Path | None = None,
+    momentum_config_path: str | Path | None = None,
+    range_config_path: str | Path | None = None,
+    recommendation_v2_config_path: str | Path | None = None,
 ) -> StockAnalysisServiceResult:
     configuration = load_valuation_configuration(config_path)
     eps_selection_config = (
@@ -218,16 +284,71 @@ def analyze_stock_from_config_file(
         if analyst_consensus_path is None
         else load_analyst_consensus_configuration(analyst_consensus_path)
     )
-    if eps_selection_config is None and industry_policy_config is None and analyst_consensus_config is None:
+    agreement_config = (
+        None
+        if agreement_config_path is None
+        else load_agreement_engine_configuration(agreement_config_path)
+    )
+    momentum_config = (
+        None
+        if momentum_config_path is None
+        else load_momentum_reference_configuration(momentum_config_path)
+    )
+    range_config = (
+        None
+        if range_config_path is None
+        else load_fair_value_range_configuration(range_config_path)
+    )
+    recommendation_v2_config = (
+        None
+        if recommendation_v2_config_path is None
+        else load_recommendation_v2_configuration(recommendation_v2_config_path)
+    )
+    if (
+        eps_selection_config is None
+        and industry_policy_config is None
+        and analyst_consensus_config is None
+        and agreement_config is None
+        and momentum_config is None
+        and range_config is None
+        and recommendation_v2_config is None
+    ):
         return analyze_stock(symbol, configuration)
-    if industry_policy_config is None and analyst_consensus_config is None:
+    if (
+        industry_policy_config is None
+        and analyst_consensus_config is None
+        and agreement_config is None
+        and momentum_config is None
+        and range_config is None
+        and recommendation_v2_config is None
+    ):
         return analyze_stock(symbol, configuration, eps_selection_config)
-    if analyst_consensus_config is None:
+    if analyst_consensus_config is None and agreement_config is None and momentum_config is None and range_config is None and recommendation_v2_config is None:
         return analyze_stock(
             symbol,
             configuration,
             eps_selection_config,
             industry_policy_config,
+        )
+    if momentum_config is None and range_config is None and recommendation_v2_config is None:
+        return analyze_stock(
+            symbol,
+            configuration,
+            eps_selection_config,
+            industry_policy_config,
+            analyst_consensus_config,
+            agreement_config,
+        )
+    if recommendation_v2_config is None:
+        return analyze_stock(
+            symbol,
+            configuration,
+            eps_selection_config,
+            industry_policy_config,
+            analyst_consensus_config,
+            agreement_config,
+            momentum_config,
+            range_config,
         )
     return analyze_stock(
         symbol,
@@ -235,6 +356,10 @@ def analyze_stock_from_config_file(
         eps_selection_config,
         industry_policy_config,
         analyst_consensus_config,
+        agreement_config,
+        momentum_config,
+        range_config,
+        recommendation_v2_config,
     )
 
 
@@ -245,6 +370,10 @@ def analyze_stock_with_profile(
     eps_selection_config: EPSSelectionConfiguration | None = None,
     industry_policy_config: IndustryPolicyConfiguration | None = None,
     analyst_consensus_config: AnalystConsensusConfiguration | None = None,
+    agreement_config: AgreementEngineConfiguration | None = None,
+    momentum_config: MomentumReferenceConfiguration | None = None,
+    range_config: FairValueRangeConfiguration | None = None,
+    recommendation_v2_config: RecommendationV2Configuration | None = None,
 ) -> StockAnalysisWithProfileResult:
     """Analyze one stock and attach optional configured research valuation."""
     result = analyze_stock(
@@ -253,6 +382,9 @@ def analyze_stock_with_profile(
         eps_selection_config,
         industry_policy_config,
         analyst_consensus_config,
+        agreement_config,
+        momentum_config,
+        range_config,
     )
     profile = None
     research = None
@@ -289,6 +421,24 @@ def analyze_stock_with_profile(
         industry_policy=result.industry_policy,
         analyst_consensus=result.analyst_consensus,
     )
+    snapshots = _build_valuation_snapshots_or_none(profile_result)
+    agreement = _build_agreement_or_none(snapshots, agreement_config)
+    fair_value_range = _build_fair_value_range_or_none(
+        snapshots,
+        agreement,
+        result.company.current_price,
+        range_config,
+        result.momentum_reference,
+    )
+    recommendation_v2 = _build_recommendation_v2_or_none(
+        result.company.symbol,
+        recommendation_v2_config,
+        fair_value_range,
+        agreement,
+        result.momentum_reference,
+        snapshots,
+        getattr(result.valuation.valuation_decision, "recommendation", None),
+    )
     return StockAnalysisWithProfileResult(
         company=profile_result.company,
         treasury=profile_result.treasury,
@@ -299,7 +449,11 @@ def analyze_stock_with_profile(
         eps_selection=profile_result.eps_selection,
         industry_policy=profile_result.industry_policy,
         analyst_consensus=profile_result.analyst_consensus,
-        valuation_snapshots=_build_valuation_snapshots_or_none(profile_result),
+        valuation_snapshots=snapshots,
+        agreement_result=agreement,
+        momentum_reference=result.momentum_reference,
+        fair_value_range=fair_value_range,
+        recommendation_v2=recommendation_v2,
     )
 
 
@@ -310,6 +464,10 @@ def analyze_stock_with_profile_from_config_files(
     eps_selection_path: str | Path | None = None,
     industry_policies_path: str | Path | None = None,
     analyst_consensus_path: str | Path | None = None,
+    agreement_config_path: str | Path | None = None,
+    momentum_config_path: str | Path | None = None,
+    range_config_path: str | Path | None = None,
+    recommendation_v2_config_path: str | Path | None = None,
 ) -> StockAnalysisWithProfileResult:
     configuration = load_valuation_configuration(config_path)
     profiles = load_valuation_profiles(profiles_path)
@@ -328,22 +486,79 @@ def analyze_stock_with_profile_from_config_files(
         if analyst_consensus_path is None
         else load_analyst_consensus_configuration(analyst_consensus_path)
     )
-    if eps_selection_config is None and industry_policy_config is None and analyst_consensus_config is None:
+    agreement_config = (
+        None
+        if agreement_config_path is None
+        else load_agreement_engine_configuration(agreement_config_path)
+    )
+    momentum_config = (
+        None
+        if momentum_config_path is None
+        else load_momentum_reference_configuration(momentum_config_path)
+    )
+    range_config = (
+        None
+        if range_config_path is None
+        else load_fair_value_range_configuration(range_config_path)
+    )
+    recommendation_v2_config = (
+        None
+        if recommendation_v2_config_path is None
+        else load_recommendation_v2_configuration(recommendation_v2_config_path)
+    )
+    if (
+        eps_selection_config is None
+        and industry_policy_config is None
+        and analyst_consensus_config is None
+        and agreement_config is None
+        and momentum_config is None
+        and range_config is None
+        and recommendation_v2_config is None
+    ):
         return analyze_stock_with_profile(symbol, configuration, profiles)
-    if industry_policy_config is None and analyst_consensus_config is None:
+    if (
+        industry_policy_config is None
+        and analyst_consensus_config is None
+        and agreement_config is None
+        and momentum_config is None
+        and range_config is None
+        and recommendation_v2_config is None
+    ):
         return analyze_stock_with_profile(
             symbol,
             configuration,
             profiles,
             eps_selection_config,
         )
-    if analyst_consensus_config is None:
+    if analyst_consensus_config is None and agreement_config is None and momentum_config is None and range_config is None and recommendation_v2_config is None:
         return analyze_stock_with_profile(
             symbol,
             configuration,
             profiles,
             eps_selection_config,
             industry_policy_config,
+        )
+    if momentum_config is None and range_config is None and recommendation_v2_config is None:
+        return analyze_stock_with_profile(
+            symbol,
+            configuration,
+            profiles,
+            eps_selection_config,
+            industry_policy_config,
+            analyst_consensus_config,
+            agreement_config,
+        )
+    if recommendation_v2_config is None:
+        return analyze_stock_with_profile(
+            symbol,
+            configuration,
+            profiles,
+            eps_selection_config,
+            industry_policy_config,
+            analyst_consensus_config,
+            agreement_config,
+            momentum_config,
+            range_config,
         )
     return analyze_stock_with_profile(
         symbol,
@@ -352,14 +567,18 @@ def analyze_stock_with_profile_from_config_files(
         eps_selection_config,
         industry_policy_config,
         analyst_consensus_config,
+        agreement_config,
+        momentum_config,
+        range_config,
+        recommendation_v2_config,
     )
 
 
-def build_analyst_consensus_result(
+def build_analyst_consensus_snapshot(
     company: CompanyFundamentals,
     valuation: StockValuationResult,
     configuration: AnalystConsensusConfiguration,
-) -> AnalystConsensusResult:
+) -> ValuationSnapshot:
     rule = get_analyst_consensus_rule(configuration, company.symbol)
     multiplier = (
         None
@@ -373,13 +592,15 @@ def build_analyst_consensus_result(
             target_mean=company.analyst_target_mean_price,
             target_high=company.analyst_target_high_price,
             target_low=company.analyst_target_low_price,
-            analyst_count=company.analyst_count,
+            currency=company.currency,
             source_timestamp=datetime.now(timezone.utc),
             treasury_multiplier=multiplier,
             rule=rule,
-            analyst_target_as_of=None,
         )
     )
+
+
+build_analyst_consensus_result = build_analyst_consensus_snapshot
 
 
 def _build_valuation_snapshots_or_none(result: object) -> ValuationSnapshotCollection | None:
@@ -388,6 +609,72 @@ def _build_valuation_snapshots_or_none(result: object) -> ValuationSnapshotColle
     except (AttributeError, TypeError, ValueError):
         return None
     return collection if collection.snapshots else None
+
+
+def _build_agreement_or_none(
+    collection: ValuationSnapshotCollection | None,
+    configuration: AgreementEngineConfiguration | None,
+) -> AgreementResult | None:
+    if collection is None or configuration is None:
+        return None
+    return analyze_agreement(collection, configuration)
+
+
+def _build_momentum_reference_or_none(
+    symbol: str,
+    configuration: MomentumReferenceConfiguration | None,
+) -> RsiMomentumReference | None:
+    if configuration is None:
+        return None
+    try:
+        series = download_daily_price_history(
+            symbol,
+            period=configuration.history_period,
+            interval=configuration.history_interval,
+        )
+        return calculate_rsi_momentum_reference(series, configuration)
+    except (RuntimeError, ValueError):
+        return None
+
+
+def _build_fair_value_range_or_none(
+    collection: ValuationSnapshotCollection | None,
+    agreement: AgreementResult | None,
+    current_price: float | None,
+    configuration: FairValueRangeConfiguration | None,
+    momentum_reference: RsiMomentumReference | None,
+) -> FairValueRangeResult | None:
+    if configuration is None:
+        return None
+    return calculate_fair_value_range(
+        collection,
+        agreement,
+        current_price,
+        configuration,
+        momentum_reference,
+    )
+
+
+def _build_recommendation_v2_or_none(
+    symbol: str,
+    configuration: RecommendationV2Configuration | None,
+    fair_value_range: FairValueRangeResult | None,
+    agreement: AgreementResult | None,
+    momentum_reference: RsiMomentumReference | None,
+    snapshots: ValuationSnapshotCollection | None,
+    legacy_recommendation: object,
+) -> RecommendationV2Result | None:
+    if configuration is None:
+        return None
+    return calculate_recommendation_v2(
+        symbol,
+        configuration,
+        fair_value_range,
+        agreement,
+        momentum_reference,
+        snapshots,
+        legacy_recommendation,
+    )
 
 
 def build_eps_selection_result(

@@ -1157,13 +1157,219 @@ model output without depending directly on every model-specific result type.
 ### Phase 2A Implementation Note: Analyst Consensus Valuation
 
 Phase 2A introduces an independent Analyst Consensus Valuation Model using
-Yahoo analyst target mean, high, and low values. The model calculates target
-midpoint, range dispersion, a conservative analyst fair value, consensus
-quality, warnings, and calculation trace.
+Yahoo analyst target mean, high, and low values from already downloaded company
+fundamentals. The model calculates target midpoint, range dispersion,
+dispersion classification, model-local confidence, and weighted mean/midpoint
+fair value.
 
 Analyst consensus remains diagnostic in this phase. It does not affect final
 recommendation, automatic PER fair value, research PER fair value, DCF
 reference values, EPS selection, industry policy, or aggregate fair value.
+Unlike the earlier model-specific result shapes, Analyst Consensus V2 produces
+a `ValuationSnapshot` directly.
+
+### Phase 2B Implementation Note: Agreement Engine V1
+
+Phase 2B introduces Agreement Engine V1 as a pure snapshot aggregation layer. It
+consumes only `ValuationSnapshotCollection`; it does not depend on Yahoo data,
+research profile objects, `FairValueResult`, or analyst raw fields, and it does
+not recalculate or change any existing valuation model output.
+
+The engine treats value types differently. `INTRINSIC_VALUE` snapshots form the
+core agreement set. `REFERENCE_VALUE` snapshots, such as the supplied DCF
+reference, can be included in an extended intrinsic cluster when configured.
+`MARKET_EXPECTATION` snapshots, such as Analyst Consensus, are compared against
+the intrinsic cluster median but do not affect overall intrinsic agreement by
+default.
+
+Pairwise model differences use symmetric percentage difference:
+
+```text
+abs(A - B) / ((A + B) / 2) * 100
+```
+
+Default agreement thresholds are configured in `config/agreement_engine.yaml`:
+strong at 10%, moderate at 20%, and weak at 35%. Outlier detection compares a
+model value to the relevant median with a one-sided percentage difference. The
+default outlier thresholds are 50% for possible outliers and 80% for outliers.
+
+The result exposes core intrinsic agreement, extended agreement, overall
+agreement, intrinsic cluster statistics, pairwise relationships, model outliers,
+market-expectation analysis, deterministic rationale, and warnings. CLI
+integration is opt-in with `--agreement-config`; report display is separately
+controlled by `--show-agreement`, preserving existing output by default.
+
+### Phase 2C Implementation Note: RSI 50 Momentum Reference
+
+Phase 2C introduces an optional RSI 50 Momentum Reference. It is deliberately
+not a valuation model and does not create a `ValuationSnapshot`. The result is
+a separate technical context object that answers where the current market price
+stands relative to the latest RSI(14) neutral-line event.
+
+The implementation uses daily Yahoo price history with defaults of `1y` and
+`1d`, requiring at least 30 valid closing observations. Adjusted close is
+preferred when a reliable adjusted-close series is available; otherwise close
+is used consistently and reported. Rows are sorted by date, invalid closes are
+ignored, and duplicate dates are normalized before RSI calculation.
+
+RSI uses Wilder smoothing:
+
+```text
+initial average gain/loss = simple mean over the first 14 deltas
+average_gain[t] = ((average_gain[t - 1] * 13) + gain[t]) / 14
+average_loss[t] = ((average_loss[t - 1] * 13) + loss[t]) / 14
+RSI = 100 - 100 / (1 + average_gain / average_loss)
+```
+
+Flat periods return RSI 50, zero-loss positive periods return 100, and
+zero-gain negative periods return 0. Crossings are detected around the neutral
+50 line, with consecutive exact-50 rows de-duplicated by looking back to the
+nearest earlier non-50 RSI. If no crossing exists and configured fallback is
+enabled, the nearest RSI-to-50 point is reported as `FALLBACK` /
+`NEAREST_TO_50`; it is not called a crossing.
+
+CLI integration is opt-in with `--momentum-config
+config/momentum_reference.yaml`; report display is separately controlled by
+`--show-momentum`. The result is descriptive momentum context only and does not
+affect Automatic PER, Research PER, DCF Reference, Analyst Consensus, Agreement
+Engine, or recommendation logic.
+
+### Phase 2D Implementation Note: Fair Value Range Engine V1
+
+Phase 2D introduces Fair Value Range Engine V1 as a pure aggregation layer over
+existing outputs. It consumes `ValuationSnapshotCollection`, the existing
+Agreement Engine result, current market price, and optionally the RSI momentum
+reference. It does not reconstruct or recalculate underlying model values.
+
+The engine keeps four concepts separate:
+
+- intrinsic valuation range.
+- market expectation.
+- current market price.
+- RSI 50 momentum reference.
+
+Core intrinsic values are usable `INTRINSIC_VALUE` snapshots with positive
+selected values and usable statuses. Supporting references are usable
+`REFERENCE_VALUE` snapshots. Market expectations, including Analyst Consensus,
+are displayed separately and do not widen the intrinsic range. RSI is displayed
+only as momentum context and is never included in conservative, base,
+optimistic, range-width, weighted-median, or agreement calculations.
+
+Definitions:
+
+- conservative value: lowest valid intrinsic or configured supporting reference
+  after outlier filtering.
+- base value: deterministic confidence-weighted median over intrinsic values
+  only.
+- optimistic intrinsic value: highest valid intrinsic value.
+- intrinsic floor: lowest included intrinsic/supporting reference value.
+- intrinsic ceiling: highest included intrinsic value.
+- range width: ceiling minus floor; width percentage is width divided by base.
+
+Default confidence weights are HIGH 1.00, MEDIUM 0.75, LOW 0.50, and UNKNOWN
+0.25. Reference values additionally receive the configured reference multiplier
+when used as support. Market position compares current price with base value
+using the simplified boundaries: `<= -30%` deeply undervalued, `< -10%`
+undervalued, `<= +10%` near fair value, `<= +20%` above fair value, and `> +20%`
+significantly overvalued.
+
+CLI integration is opt-in with `--range-config config/fair_value_range.yaml`;
+report display is separately controlled by `--show-range`. Batch mode calculates
+each symbol independently, tolerates missing optional history/research/DCF or
+analyst values, and preserves existing per-symbol failure behavior. Existing
+BUY/HOLD/SELL recommendation and buy/sell thresholds remain unchanged.
+
+### Phase 2E Implementation Note: Recommendation Engine V2
+
+Phase 2E introduces Recommendation Engine V2 as an additive deterministic
+recommendation layer. It consumes existing per-symbol results:
+`ValuationSnapshotCollection`, `AgreementResult`, `RsiMomentumReference`,
+`FairValueRangeResult`, and the legacy recommendation. It does not redownload
+market data, recalculate snapshots, rebuild agreement, recalculate RSI,
+recalculate fair-value range, or reclassify analyst outliers.
+
+The core principle is valuation first. V2 begins with current price versus base
+intrinsic value and classifies that spread as deeply undervalued, undervalued,
+slightly undervalued, near fair value, moderately overvalued, significantly
+overvalued, extremely overvalued, or unavailable. Momentum uses current RSI and
+price versus the RSI 50 reference only as a timing and urgency modifier. A
+stock that is meaningfully overvalued cannot become attractive solely because
+momentum is positive.
+
+Evidence quality is derived from intrinsic model count, core intrinsic
+agreement, fair-value range status, and intrinsic snapshot confidence. HIGH
+evidence requires at least two intrinsic models, STRONG core agreement, at
+least one HIGH-confidence intrinsic model, and a COMPLETE range. MEDIUM
+evidence allows STRONG or MODERATE agreement with a COMPLETE or PARTIAL range.
+LOW evidence covers usable but weaker support. INSUFFICIENT evidence blocks the
+V2 recommendation.
+
+The decision matrix is deterministic:
+
+- deeply undervalued values can be `STRONG_BUY`, `BUY`, or `ACCUMULATE`
+  depending on evidence and momentum.
+- undervalued values can be `BUY`, `ACCUMULATE`, or `HOLD`.
+- slightly undervalued values require HIGH evidence and positive momentum for
+  `ACCUMULATE`; otherwise they are `HOLD`.
+- near fair value is generally `HOLD`, with strong positive momentum allowing
+  `ACCUMULATE` and strong negative momentum producing `REDUCE`.
+- moderately overvalued values are `REDUCE` unless momentum is strongly
+  positive.
+- significantly and extremely overvalued values become `REDUCE` or `SELL`
+  depending on evidence and momentum.
+
+Conflicted core agreement caps bullish conclusions at `ACCUMULATE` and bearish
+conclusions at `REDUCE`. Analyst Consensus remains contextual market
+expectation only; low-confidence or outlier analyst targets are mentioned in
+rationale but do not override the intrinsic conclusion. V2 also compares its
+decision with the legacy recommendation and reports whether the two are
+aligned, V2 is more bullish, V2 is more bearish, or the comparison is not
+available.
+
+CLI integration is opt-in with `--recommendation-v2-config
+config/recommendation_v2.yaml`; report display is separately controlled by
+`--show-recommendation-v2`. Batch mode attaches an independent V2 result to
+each successful symbol when configured. Existing legacy BUY/HOLD/SELL logic,
+valuation formulas, buy/sell thresholds, snapshots, agreement, momentum, and
+fair-value range outputs remain unchanged.
+
+### Phase 2F Implementation Note: Multi-Stock Ranking RSI 50 Reference Visibility
+
+Multi-Stock Ranking V1 consumes completed per-symbol analysis results and does
+not recalculate valuation, agreement, RSI, fair-value range, or Recommendation
+V2. The ranking output now exposes the existing RSI 50 Momentum Reference as
+market sentiment context.
+
+The RSI 50 Reference Price is the stock price recorded at the latest neutral
+RSI event: `CROSS_ABOVE`, `CROSS_BELOW`, or `NEAREST_TO_50` fallback when no
+qualifying crossing is available. Reports call it a momentum neutral reference,
+neutral-line transition price, technical reference level, or market sentiment
+context. It must not be described as intrinsic value, fair value, guaranteed
+support, actual investor average purchase price, or volume-weighted cost basis.
+
+Ranking V1 classifies current price versus the RSI 50 reference using configured
+display bands:
+
+- `WELL_ABOVE_NEUTRAL_REFERENCE`: at or above +10%.
+- `ABOVE_NEUTRAL_REFERENCE`: above +3% and below +10%.
+- `NEAR_NEUTRAL_REFERENCE`: from -3% through +3%.
+- `BELOW_NEUTRAL_REFERENCE`: above -10% and below -3%.
+- `WELL_BELOW_NEUTRAL_REFERENCE`: at or below -10%.
+- `UNAVAILABLE`: no finite current-versus-reference percentage.
+
+The ranking entry exposes current RSI, reference date, reference price,
+reference RSI, cross direction, current-versus-reference amount and percentage,
+reference status, price field, trading days since reference, and sentiment
+position. Text reports show these fields in the main ranking table, a focused
+RSI 50 Momentum Reference table, and ranking details. CSV output includes stable
+flat columns for those values. JSON output nests them under
+`momentum_reference`.
+
+This field is display-only in V1. `momentum_reference_display.affect_ranking_score`
+must remain `false`; the sentiment position does not change ranking component
+weights, total score, normalized score, category, eligibility, intrinsic value,
+or Recommendation V2. RSI information is already reflected once through the
+existing MomentumCondition ranking component.
 
 ## 24. Test Strategy
 

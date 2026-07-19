@@ -1,50 +1,30 @@
-from collections.abc import Mapping
+from __future__ import annotations
+
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
 from math import isfinite
 
+from src.analysis.valuation_snapshot import (
+    ValuationConfidenceLevel,
+    ValuationModelType,
+    ValuationSnapshot,
+    ValuationSnapshotStatus,
+    ValuationSnapshotStep,
+    ValuationValueType,
+)
 from src.config.analyst_consensus import (
     AnalystConsensusRule,
-    AnalystFairValueMethod,
+    AnalystValuationMethod,
 )
 
 
-class AnalystConsensusStatus(str, Enum):
-    COMPLETE = "COMPLETE"
-    PARTIAL = "PARTIAL"
-    UNAVAILABLE = "UNAVAILABLE"
-
-
-class AnalystDispersionLevel(str, Enum):
+class AnalystDispersionClassification(str, Enum):
     LOW = "LOW"
     MEDIUM = "MEDIUM"
     HIGH = "HIGH"
     EXTREME = "EXTREME"
     UNKNOWN = "UNKNOWN"
-
-
-class AnalystConsensusQuality(str, Enum):
-    STRONG = "STRONG"
-    MODERATE = "MODERATE"
-    WEAK = "WEAK"
-    UNRELIABLE = "UNRELIABLE"
-    UNKNOWN = "UNKNOWN"
-
-
-class StaleStatus(str, Enum):
-    FRESH = "FRESH"
-    STALE = "STALE"
-    UNKNOWN = "UNKNOWN"
-
-
-@dataclass(frozen=True)
-class CalculationStep:
-    name: str
-    input_values: Mapping[str, object]
-    formula: str | None
-    result: float | None
-    explanation: str
 
 
 @dataclass(frozen=True)
@@ -54,169 +34,182 @@ class AnalystConsensusInputs:
     target_mean: float | None
     target_high: float | None
     target_low: float | None
-    analyst_count: int | None
+    currency: str | None
     source_timestamp: datetime
     treasury_multiplier: float | None
     rule: AnalystConsensusRule
-    analyst_target_as_of: datetime | None = None
-
-
-@dataclass(frozen=True)
-class AnalystConsensusResult:
-    symbol: str
-    status: AnalystConsensusStatus
-    fair_value_method: AnalystFairValueMethod
-    target_mean: float | None
-    target_high: float | None
-    target_low: float | None
-    target_midpoint: float | None
-    target_range: float | None
-    dispersion_percent: float | None
-    dispersion_level: AnalystDispersionLevel
-    analyst_count: int | None
-    consensus_quality: AnalystConsensusQuality
-    current_price: float | None
-    mean_upside_percent: float | None
-    low_upside_percent: float | None
-    high_upside_percent: float | None
-    raw_analyst_fair_value: float | None
-    treasury_applied: bool
-    treasury_multiplier: float | None
-    adjusted_analyst_fair_value: float | None
-    analyst_target_as_of: datetime | None
-    retrieved_at: datetime
-    stale_status: StaleStatus
-    rationale: str | None
-    warnings: tuple[str, ...]
-    calculation_steps: tuple[CalculationStep, ...]
 
 
 def calculate_analyst_consensus(
     inputs: AnalystConsensusInputs,
-) -> AnalystConsensusResult:
+) -> ValuationSnapshot:
+    """Calculate analyst-consensus market expectation directly as a snapshot."""
     symbol = _normalize_symbol(inputs.symbol)
     _require_aware_datetime("source_timestamp", inputs.source_timestamp)
-    retrieved_at = inputs.source_timestamp.astimezone(timezone.utc)
+    generated_at = inputs.source_timestamp.astimezone(timezone.utc)
     warnings: list[str] = []
-    steps: list[CalculationStep] = []
+
     if not inputs.rule.enabled:
-        return _unavailable(inputs, symbol, retrieved_at, ("Analyst consensus is disabled.",))
+        return _snapshot(
+            symbol=symbol,
+            currency=inputs.currency,
+            generated_at=generated_at,
+            status=ValuationSnapshotStatus.UNAVAILABLE,
+            confidence=ValuationConfidenceLevel.UNKNOWN,
+            raw_fair_value=None,
+            adjusted_fair_value=None,
+            selected_fair_value=None,
+            assumptions=_assumptions(inputs.rule),
+            metrics={},
+            rationale=inputs.rule.rationale,
+            warnings=("Analyst consensus is disabled.",),
+            calculation_steps=(),
+        )
 
     current_price = _optional_positive(inputs.current_price, "current_price", warnings)
     mean = _optional_positive(inputs.target_mean, "target_mean", warnings)
     high = _optional_positive(inputs.target_high, "target_high", warnings)
     low = _optional_positive(inputs.target_low, "target_low", warnings)
-    analyst_count = _optional_count(inputs.analyst_count, warnings)
-    multiplier = _optional_multiplier(inputs.treasury_multiplier, warnings)
+    multiplier = _optional_positive(
+        inputs.treasury_multiplier,
+        "treasury_multiplier",
+        warnings,
+    )
     ordering_valid = _ordering_valid(low, mean, high, warnings)
-    midpoint = (low + high) / 2 if low is not None and high is not None else None
-    target_range = high - low if low is not None and high is not None else None
+    midpoint = (high + low) / 2 if high is not None and low is not None else None
+    target_range = high - low if high is not None and low is not None else None
     dispersion = (
-        target_range / max(abs(mean), 1e-9) * 100
+        target_range / mean * 100
         if target_range is not None and mean is not None
         else None
     )
-    dispersion_level = _classify_dispersion(dispersion, inputs.rule)
+    classification = _classify_dispersion(dispersion, inputs.rule)
     raw_fair_value = _raw_fair_value(inputs.rule, mean, midpoint, warnings)
-    if raw_fair_value is not None:
-        steps.append(CalculationStep(
-            "Analyst fair value",
-            {"method": inputs.rule.fair_value_method.value, "mean": mean, "midpoint": midpoint},
-            _formula(inputs.rule.fair_value_method),
-            raw_fair_value,
-            "Calculated independent analyst consensus fair value.",
-        ))
-    if not ordering_valid:
-        raw_fair_value = None
-    treasury_applied = inputs.rule.apply_treasury_multiplier
-    adjusted = raw_fair_value
+
+    treasury_applied = inputs.rule.apply_treasury
+    adjusted_fair_value = raw_fair_value
     if treasury_applied:
         if raw_fair_value is None or multiplier is None:
-            adjusted = None
+            adjusted_fair_value = None
             warnings.append("Treasury multiplier was requested but unavailable.")
         else:
-            adjusted = raw_fair_value * multiplier
-    stale_status = _stale_status(inputs.analyst_target_as_of, retrieved_at, inputs.rule, warnings)
-    status = _status(raw_fair_value, adjusted, ordering_valid, mean, high, low, analyst_count, inputs.rule)
-    quality = _quality(status, dispersion_level, analyst_count, stale_status, ordering_valid, mean, high, low)
-    if dispersion_level == AnalystDispersionLevel.EXTREME:
+            adjusted_fair_value = raw_fair_value * multiplier
+
+    if not ordering_valid:
+        raw_fair_value = None
+        adjusted_fair_value = None
+    status = _status(raw_fair_value, adjusted_fair_value, mean, high, low)
+    confidence = _confidence(status, classification, mean, high, low)
+    if classification == AnalystDispersionClassification.EXTREME:
         warnings.append("Analyst target dispersion is extreme.")
-    return AnalystConsensusResult(
+
+    steps = ()
+    if raw_fair_value is not None:
+        steps = (
+            ValuationSnapshotStep(
+                name="Analyst weighted fair value",
+                input_values={
+                    "target_mean": mean,
+                    "target_midpoint": midpoint,
+                    "mean_weight": inputs.rule.mean_weight,
+                    "midpoint_weight": inputs.rule.midpoint_weight,
+                },
+                formula="target_mean * mean_weight + target_midpoint * midpoint_weight",
+                result=raw_fair_value,
+                explanation="Calculated Yahoo analyst target weighted mean/midpoint.",
+            ),
+        )
+
+    return _snapshot(
         symbol=symbol,
+        currency=inputs.currency,
+        generated_at=generated_at,
         status=status,
-        fair_value_method=inputs.rule.fair_value_method,
-        target_mean=mean,
-        target_high=high,
-        target_low=low,
-        target_midpoint=midpoint,
-        target_range=target_range,
-        dispersion_percent=dispersion,
-        dispersion_level=dispersion_level,
-        analyst_count=analyst_count,
-        consensus_quality=quality,
-        current_price=current_price,
-        mean_upside_percent=_upside(mean, current_price),
-        low_upside_percent=_upside(low, current_price),
-        high_upside_percent=_upside(high, current_price),
-        raw_analyst_fair_value=raw_fair_value,
-        treasury_applied=treasury_applied,
-        treasury_multiplier=multiplier,
-        adjusted_analyst_fair_value=adjusted,
-        analyst_target_as_of=inputs.analyst_target_as_of,
-        retrieved_at=retrieved_at,
-        stale_status=stale_status,
+        confidence=confidence,
+        raw_fair_value=raw_fair_value,
+        adjusted_fair_value=adjusted_fair_value,
+        selected_fair_value=adjusted_fair_value,
+        assumptions=_assumptions(inputs.rule),
+        metrics={
+            "current_price": current_price,
+            "target_mean": mean,
+            "target_high": high,
+            "target_low": low,
+            "target_midpoint": midpoint,
+            "target_range": target_range,
+            "dispersion_percent": dispersion,
+            "dispersion_classification": classification.value,
+            "treasury_applied": treasury_applied,
+            "treasury_multiplier": multiplier,
+        },
         rationale=inputs.rule.rationale,
         warnings=tuple(dict.fromkeys(warnings)),
-        calculation_steps=tuple(steps),
+        calculation_steps=steps,
     )
 
 
-def _unavailable(inputs, symbol, retrieved_at, warnings):
-    return AnalystConsensusResult(symbol, AnalystConsensusStatus.UNAVAILABLE, inputs.rule.fair_value_method, None, None, None, None, None, None, AnalystDispersionLevel.UNKNOWN, None, AnalystConsensusQuality.UNKNOWN, inputs.current_price, None, None, None, None, False, None, None, None, retrieved_at, StaleStatus.UNKNOWN, inputs.rule.rationale, tuple(warnings), ())
+def _snapshot(
+    *,
+    symbol: str,
+    currency: str | None,
+    generated_at: datetime,
+    status: ValuationSnapshotStatus,
+    confidence: ValuationConfidenceLevel,
+    raw_fair_value: float | None,
+    adjusted_fair_value: float | None,
+    selected_fair_value: float | None,
+    assumptions: dict[str, object],
+    metrics: dict[str, object],
+    rationale: str | None,
+    warnings: tuple[str, ...],
+    calculation_steps: tuple[ValuationSnapshotStep, ...],
+) -> ValuationSnapshot:
+    return ValuationSnapshot(
+        symbol=symbol,
+        model_type=ValuationModelType.ANALYST_CONSENSUS,
+        model_name="Analyst Consensus Model",
+        value_type=ValuationValueType.MARKET_EXPECTATION,
+        status=status,
+        confidence=confidence,
+        raw_fair_value=raw_fair_value,
+        adjusted_fair_value=adjusted_fair_value,
+        selected_fair_value=selected_fair_value,
+        currency=currency,
+        valuation_date=None,
+        source_as_of=None,
+        generated_at=generated_at,
+        methodology="Weighted Mean / Midpoint",
+        rationale=rationale,
+        assumptions=assumptions,
+        metrics={key: value for key, value in metrics.items() if value is not None},
+        warnings=warnings,
+        calculation_steps=calculation_steps,
+    )
 
 
-def _status(raw, adjusted, ordering_valid, mean, high, low, analyst_count, rule):
-    if raw is None or not ordering_valid or (rule.apply_treasury_multiplier and adjusted is None):
-        return AnalystConsensusStatus.UNAVAILABLE
-    if analyst_count is None or high is None or low is None:
-        return AnalystConsensusStatus.PARTIAL
-    return AnalystConsensusStatus.COMPLETE
+def _assumptions(rule: AnalystConsensusRule) -> dict[str, object]:
+    return {
+        "valuation_method": rule.valuation_method.value,
+        "mean_weight": rule.mean_weight,
+        "midpoint_weight": rule.midpoint_weight,
+        "apply_treasury": rule.apply_treasury,
+        "low_dispersion": rule.low_dispersion,
+        "medium_dispersion": rule.medium_dispersion,
+        "high_dispersion": rule.high_dispersion,
+    }
 
 
-def _quality(status, dispersion, analyst_count, stale, ordering_valid, mean, high, low):
-    if not ordering_valid or analyst_count == 0 or status == AnalystConsensusStatus.UNAVAILABLE:
-        return AnalystConsensusQuality.UNRELIABLE
-    if dispersion == AnalystDispersionLevel.EXTREME:
-        return AnalystConsensusQuality.UNRELIABLE
-    if dispersion == AnalystDispersionLevel.HIGH or stale == StaleStatus.STALE or (analyst_count is not None and analyst_count <= 4):
-        return AnalystConsensusQuality.WEAK
-    if dispersion == AnalystDispersionLevel.MEDIUM:
-        return AnalystConsensusQuality.MODERATE
-    if dispersion == AnalystDispersionLevel.LOW and status == AnalystConsensusStatus.COMPLETE and (analyst_count is None or analyst_count >= 10):
-        return AnalystConsensusQuality.STRONG
-    if mean is None or high is None or low is None:
-        return AnalystConsensusQuality.UNKNOWN
-    return AnalystConsensusQuality.MODERATE
-
-
-def _classify_dispersion(value, rule):
-    if value is None:
-        return AnalystDispersionLevel.UNKNOWN
-    if value <= rule.low_dispersion_threshold_percent:
-        return AnalystDispersionLevel.LOW
-    if value <= rule.medium_dispersion_threshold_percent:
-        return AnalystDispersionLevel.MEDIUM
-    if value <= rule.extreme_dispersion_threshold_percent:
-        return AnalystDispersionLevel.HIGH
-    return AnalystDispersionLevel.EXTREME
-
-
-def _raw_fair_value(rule, mean, midpoint, warnings):
-    if rule.fair_value_method == AnalystFairValueMethod.MEAN:
+def _raw_fair_value(
+    rule: AnalystConsensusRule,
+    mean: float | None,
+    midpoint: float | None,
+    warnings: list[str],
+) -> float | None:
+    if rule.valuation_method == AnalystValuationMethod.MEAN:
         if mean is None:
             warnings.append("Target mean is unavailable.")
         return mean
-    if rule.fair_value_method == AnalystFairValueMethod.MIDPOINT:
+    if rule.valuation_method == AnalystValuationMethod.MIDPOINT:
         if midpoint is None:
             warnings.append("Target midpoint is unavailable.")
         return midpoint
@@ -226,7 +219,68 @@ def _raw_fair_value(rule, mean, midpoint, warnings):
     return mean * rule.mean_weight + midpoint * rule.midpoint_weight
 
 
-def _ordering_valid(low, mean, high, warnings):
+def _classify_dispersion(
+    dispersion_percent: float | None,
+    rule: AnalystConsensusRule,
+) -> AnalystDispersionClassification:
+    if dispersion_percent is None:
+        return AnalystDispersionClassification.UNKNOWN
+    if dispersion_percent <= rule.low_dispersion:
+        return AnalystDispersionClassification.LOW
+    if dispersion_percent <= rule.medium_dispersion:
+        return AnalystDispersionClassification.MEDIUM
+    if dispersion_percent <= rule.high_dispersion:
+        return AnalystDispersionClassification.HIGH
+    return AnalystDispersionClassification.EXTREME
+
+
+def _status(
+    raw_fair_value: float | None,
+    adjusted_fair_value: float | None,
+    mean: float | None,
+    high: float | None,
+    low: float | None,
+) -> ValuationSnapshotStatus:
+    if raw_fair_value is None or adjusted_fair_value is None:
+        if mean is not None or high is not None or low is not None:
+            return ValuationSnapshotStatus.PARTIAL
+        return ValuationSnapshotStatus.UNAVAILABLE
+    if mean is None or high is None or low is None:
+        return ValuationSnapshotStatus.PARTIAL
+    return ValuationSnapshotStatus.COMPLETE
+
+
+def _confidence(
+    status: ValuationSnapshotStatus,
+    classification: AnalystDispersionClassification,
+    mean: float | None,
+    high: float | None,
+    low: float | None,
+) -> ValuationConfidenceLevel:
+    if status == ValuationSnapshotStatus.UNAVAILABLE:
+        return ValuationConfidenceLevel.UNKNOWN
+    if status == ValuationSnapshotStatus.PARTIAL:
+        return ValuationConfidenceLevel.LOW
+    if mean is None or high is None or low is None:
+        return ValuationConfidenceLevel.LOW
+    if classification == AnalystDispersionClassification.LOW:
+        return ValuationConfidenceLevel.HIGH
+    if classification == AnalystDispersionClassification.MEDIUM:
+        return ValuationConfidenceLevel.MEDIUM
+    if classification in (
+        AnalystDispersionClassification.HIGH,
+        AnalystDispersionClassification.EXTREME,
+    ):
+        return ValuationConfidenceLevel.LOW
+    return ValuationConfidenceLevel.UNKNOWN
+
+
+def _ordering_valid(
+    low: float | None,
+    mean: float | None,
+    high: float | None,
+    warnings: list[str],
+) -> bool:
     if low is not None and high is not None and low > high:
         warnings.append("Analyst target ordering is invalid: low is above high.")
         return False
@@ -239,54 +293,16 @@ def _ordering_valid(low, mean, high, warnings):
     return True
 
 
-def _stale_status(as_of, retrieved_at, rule, warnings):
-    if as_of is None:
-        warnings.append("Yahoo did not provide a reliable analyst-target as-of date.")
-        return StaleStatus.UNKNOWN
-    _require_aware_datetime("analyst_target_as_of", as_of)
-    age_days = (retrieved_at - as_of.astimezone(timezone.utc)).days
-    if age_days < 0:
-        warnings.append("Analyst target as-of date is in the future.")
-        return StaleStatus.UNKNOWN
-    return StaleStatus.STALE if age_days > rule.stale_after_days else StaleStatus.FRESH
-
-
-def _upside(target, current):
-    if target is None or current is None:
-        return None
-    return (target / current - 1) * 100
-
-
-def _optional_positive(value, name, warnings):
+def _optional_positive(value: object, name: str, warnings: list[str]) -> float | None:
     if value is None:
         return None
-    if isinstance(value, bool) or not isinstance(value, (int, float)) or not isfinite(value) or value <= 0:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        warnings.append(f"{name} is invalid and was treated as unavailable.")
+        return None
+    if not isfinite(value) or value <= 0:
         warnings.append(f"{name} is invalid and was treated as unavailable.")
         return None
     return float(value)
-
-
-def _optional_multiplier(value, warnings):
-    if value is None:
-        return None
-    return _optional_positive(value, "treasury_multiplier", warnings)
-
-
-def _optional_count(value, warnings):
-    if value is None:
-        return None
-    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
-        warnings.append("analyst_count is invalid and was treated as unavailable.")
-        return None
-    return value
-
-
-def _formula(method):
-    if method == AnalystFairValueMethod.MEAN:
-        return "target_mean"
-    if method == AnalystFairValueMethod.MIDPOINT:
-        return "(target_low + target_high) / 2"
-    return "target_mean * mean_weight + target_midpoint * midpoint_weight"
 
 
 def _normalize_symbol(symbol: str) -> str:
@@ -295,6 +311,8 @@ def _normalize_symbol(symbol: str) -> str:
     normalized = symbol.strip().upper()
     if not normalized:
         raise ValueError("symbol must not be empty.")
+    if any(character.isspace() for character in normalized):
+        raise ValueError("symbol must not contain whitespace.")
     return normalized
 
 

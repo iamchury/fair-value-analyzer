@@ -1,4 +1,5 @@
 from dataclasses import FrozenInstanceError, replace
+from datetime import date, timedelta
 from pathlib import Path
 
 import pytest
@@ -9,6 +10,19 @@ from src.config.eps_selection import (
     EPSSelectionMethod,
     EPSSelectionRule,
 )
+from src.config.analyst_consensus import (
+    AnalystConsensusConfiguration,
+    AnalystConsensusRule,
+    AnalystValuationMethod,
+)
+from src.config.agreement_engine import AgreementEngineConfiguration
+from src.config.fair_value_range import (
+    ConservativeRangeMethod,
+    FairValueRangeConfiguration,
+    OptimisticRangeMethod,
+    RangeBaseMethod,
+)
+from src.config.momentum_reference import MomentumReferenceConfiguration
 from src.config.industry_policies import (
     IndustryPolicyConfiguration,
     IndustryValuationPolicy,
@@ -21,6 +35,7 @@ from src.analysis.stock_valuation import (
     StockValuationStatus,
 )
 from src.analysis.valuation_snapshot import ValuationModelType
+from src.analysis.agreement_engine import AgreementLevel
 from src.analysis.target_pe import TargetPEConfig
 from src.analysis.valuation_decision import (
     ValuationDecisionConfig,
@@ -48,6 +63,7 @@ from src.yahoo.company import (
     YahooEPSRawSnapshot,
 )
 from src.yahoo.treasury import TreasuryHistoryConfig, TreasuryYieldSnapshot
+from src.yahoo.prices import HistoricalPriceRow, HistoricalPriceSeries
 
 
 @pytest.fixture
@@ -777,6 +793,134 @@ def test_analyze_stock_applies_industry_policy_without_extra_downloads(
     assert result.valuation.fair_value.forward_eps == 150.77
 
 
+def test_analyze_stock_adds_analyst_snapshot_without_extra_downloads(
+    monkeypatch: pytest.MonkeyPatch,
+    configuration: ValuationConfiguration,
+    company: CompanyFundamentals,
+    treasury: TreasuryYieldSnapshot,
+) -> None:
+    calls = []
+    analyst_config = AnalystConsensusConfiguration(
+        default_rule=AnalystConsensusRule(
+            enabled=True,
+            valuation_method=AnalystValuationMethod.WEIGHTED_MEAN_MIDPOINT,
+            mean_weight=0.7,
+            midpoint_weight=0.3,
+            apply_treasury=False,
+            low_dispersion=25.0,
+            medium_dispersion=60.0,
+            high_dispersion=100.0,
+            rationale="analyst",
+        ),
+        symbol_rules={},
+    )
+
+    monkeypatch.setattr(
+        stock_analysis,
+        "download_company_fundamentals",
+        lambda symbol: calls.append(("company", symbol)) or company,
+    )
+    monkeypatch.setattr(
+        stock_analysis,
+        "download_treasury_yield_snapshot",
+        lambda config: calls.append(("treasury", config)) or treasury,
+    )
+
+    result = analyze_stock(
+        "LITE",
+        configuration,
+        analyst_consensus_config=analyst_config,
+    )
+
+    assert calls == [("company", "LITE"), ("treasury", configuration.treasury_history)]
+    assert result.analyst_consensus is not None
+    assert result.analyst_consensus.model_type == ValuationModelType.ANALYST_CONSENSUS
+    assert result.analyst_consensus.selected_fair_value == pytest.approx(91.5)
+    assert result.valuation.valuation_decision.recommendation == ValuationRecommendation.BUY
+    assert result.valuation_snapshots is not None
+    assert result.valuation_snapshots.get(ValuationModelType.ANALYST_CONSENSUS) is (
+        result.analyst_consensus
+    )
+
+
+def test_analyze_stock_adds_agreement_from_existing_snapshots(
+    monkeypatch: pytest.MonkeyPatch,
+    configuration: ValuationConfiguration,
+    company: CompanyFundamentals,
+    treasury: TreasuryYieldSnapshot,
+) -> None:
+    agreement_config = AgreementEngineConfiguration(
+        enabled=True,
+        strong_threshold_pct=10.0,
+        moderate_threshold_pct=20.0,
+        weak_threshold_pct=35.0,
+        outlier_threshold_pct=50.0,
+        extreme_outlier_threshold_pct=80.0,
+        minimum_primary_models=1,
+        include_reference_in_intrinsic_cluster=True,
+        market_expectation_affects_overall_agreement=False,
+    )
+    monkeypatch.setattr(
+        stock_analysis,
+        "download_company_fundamentals",
+        lambda symbol: company,
+    )
+    monkeypatch.setattr(
+        stock_analysis,
+        "download_treasury_yield_snapshot",
+        lambda config: treasury,
+    )
+
+    result = analyze_stock("LITE", configuration, agreement_config=agreement_config)
+
+    assert result.agreement_result is not None
+    assert result.valuation_snapshots is not None
+    assert result.agreement_result.overall_agreement == AgreementLevel.INSUFFICIENT
+    assert result.valuation.valuation_decision.recommendation == ValuationRecommendation.BUY
+
+
+def test_analyze_stock_from_config_file_loads_agreement_config_when_supplied(
+    monkeypatch: pytest.MonkeyPatch,
+    configuration: ValuationConfiguration,
+) -> None:
+    calls = []
+    agreement_config = object()
+    expected = object()
+
+    monkeypatch.setattr(
+        stock_analysis,
+        "load_valuation_configuration",
+        lambda path: calls.append(("valuation", path)) or configuration,
+    )
+    monkeypatch.setattr(
+        stock_analysis,
+        "load_agreement_engine_configuration",
+        lambda path: calls.append(("agreement", path)) or agreement_config,
+    )
+    monkeypatch.setattr(
+        stock_analysis,
+        "analyze_stock",
+        lambda symbol, config, eps=None, industry=None, analyst=None, agreement=None: calls.append(
+            ("analyze", symbol, config, eps, industry, analyst, agreement)
+        )
+        or expected,
+    )
+
+    assert (
+        analyze_stock_from_config_file(
+            "MU",
+            config_path="valuation.yaml",
+            agreement_config_path="agreement.yaml",
+        )
+        is expected
+    )
+    assert calls == [
+        ("valuation", "valuation.yaml"),
+        ("agreement", "agreement.yaml"),
+        ("analyze", "MU", configuration, None, None, None, agreement_config),
+    ]
+
+
 def test_analyze_stock_from_config_file_loads_industry_policy_when_supplied(
     monkeypatch: pytest.MonkeyPatch,
     configuration: ValuationConfiguration,
@@ -819,6 +963,128 @@ def test_analyze_stock_from_config_file_loads_industry_policy_when_supplied(
     ]
 
 
+def test_analyze_stock_adds_momentum_and_range_without_changing_recommendation(
+    monkeypatch: pytest.MonkeyPatch,
+    configuration: ValuationConfiguration,
+    company: CompanyFundamentals,
+    treasury: TreasuryYieldSnapshot,
+) -> None:
+    history_calls = []
+    monkeypatch.setattr(stock_analysis, "download_company_fundamentals", lambda symbol: company)
+    monkeypatch.setattr(stock_analysis, "download_treasury_yield_snapshot", lambda config: treasury)
+    monkeypatch.setattr(
+        stock_analysis,
+        "download_daily_price_history",
+        lambda symbol, period, interval: history_calls.append((symbol, period, interval))
+        or _price_history(symbol),
+    )
+
+    result = analyze_stock(
+        "LITE",
+        configuration,
+        momentum_config=_momentum_config(),
+        range_config=_range_config(),
+    )
+
+    assert history_calls == [("LITE", "1y", "1d")]
+    assert result.momentum_reference is not None
+    assert result.fair_value_range is not None
+    assert result.valuation_snapshots is not None
+    assert result.valuation.valuation_decision.recommendation == ValuationRecommendation.BUY
+
+
+def test_analyze_stock_from_config_file_loads_momentum_and_range_configs_when_supplied(
+    monkeypatch: pytest.MonkeyPatch,
+    configuration: ValuationConfiguration,
+) -> None:
+    calls = []
+    momentum_config = object()
+    range_config = object()
+    expected = object()
+
+    monkeypatch.setattr(
+        stock_analysis,
+        "load_valuation_configuration",
+        lambda path: calls.append(("valuation", path)) or configuration,
+    )
+    monkeypatch.setattr(
+        stock_analysis,
+        "load_momentum_reference_configuration",
+        lambda path: calls.append(("momentum", path)) or momentum_config,
+    )
+    monkeypatch.setattr(
+        stock_analysis,
+        "load_fair_value_range_configuration",
+        lambda path: calls.append(("range", path)) or range_config,
+    )
+    monkeypatch.setattr(
+        stock_analysis,
+        "analyze_stock",
+        lambda symbol, config, eps=None, industry=None, analyst=None, agreement=None, momentum=None, fair_range=None: calls.append(
+            ("analyze", symbol, config, eps, industry, analyst, agreement, momentum, fair_range)
+        )
+        or expected,
+    )
+
+    assert (
+        analyze_stock_from_config_file(
+            "MU",
+            config_path="valuation.yaml",
+            momentum_config_path="momentum.yaml",
+            range_config_path="range.yaml",
+        )
+        is expected
+    )
+    assert calls == [
+        ("valuation", "valuation.yaml"),
+        ("momentum", "momentum.yaml"),
+        ("range", "range.yaml"),
+        ("analyze", "MU", configuration, None, None, None, None, momentum_config, range_config),
+    ]
+
+
+def test_analyze_stock_from_config_file_loads_recommendation_v2_config_when_supplied(
+    monkeypatch: pytest.MonkeyPatch,
+    configuration: ValuationConfiguration,
+) -> None:
+    calls = []
+    recommendation_config = object()
+    expected = object()
+
+    monkeypatch.setattr(
+        stock_analysis,
+        "load_valuation_configuration",
+        lambda path: calls.append(("valuation", path)) or configuration,
+    )
+    monkeypatch.setattr(
+        stock_analysis,
+        "load_recommendation_v2_configuration",
+        lambda path: calls.append(("recommendation_v2", path)) or recommendation_config,
+    )
+    monkeypatch.setattr(
+        stock_analysis,
+        "analyze_stock",
+        lambda symbol, config, eps=None, industry=None, analyst=None, agreement=None, momentum=None, fair_range=None, recommendation_v2=None: calls.append(
+            ("analyze", symbol, config, eps, industry, analyst, agreement, momentum, fair_range, recommendation_v2)
+        )
+        or expected,
+    )
+
+    assert (
+        analyze_stock_from_config_file(
+            "MU",
+            config_path="valuation.yaml",
+            recommendation_v2_config_path="recommendation.yaml",
+        )
+        is expected
+    )
+    assert calls == [
+        ("valuation", "valuation.yaml"),
+        ("recommendation_v2", "recommendation.yaml"),
+        ("analyze", "MU", configuration, None, None, None, None, None, None, recommendation_config),
+    ]
+
+
 def test_service_result_dataclass_is_immutable(
     company: CompanyFundamentals,
     treasury: TreasuryYieldSnapshot,
@@ -831,3 +1097,54 @@ def test_service_result_dataclass_is_immutable(
 
     with pytest.raises(FrozenInstanceError):
         result.company = company
+
+
+def _momentum_config() -> MomentumReferenceConfiguration:
+    return MomentumReferenceConfiguration(
+        enabled=True,
+        rsi_period=14,
+        neutral_level=50.0,
+        history_period="1y",
+        history_interval="1d",
+        minimum_observations=30,
+        fallback_to_nearest=True,
+        prefer_adjusted_close=True,
+    )
+
+
+def _range_config() -> FairValueRangeConfiguration:
+    return FairValueRangeConfiguration(
+        enabled=True,
+        include_reference_values=True,
+        include_low_confidence_intrinsic=True,
+        exclude_outliers=True,
+        base_method=RangeBaseMethod.CONFIDENCE_WEIGHTED_MEDIAN,
+        conservative_method=ConservativeRangeMethod.LOWER_SUPPORT,
+        optimistic_method=OptimisticRangeMethod.UPPER_INTRINSIC_SUPPORT,
+        high_confidence_weight=1.0,
+        medium_confidence_weight=0.75,
+        low_confidence_weight=0.5,
+        unknown_confidence_weight=0.25,
+        minimum_intrinsic_models=1,
+        reference_value_weight=0.5,
+        market_expectation_in_intrinsic_range=False,
+        show_market_expectation_separately=True,
+        show_momentum_reference_separately=True,
+        deep_undervalued_pct=-30.0,
+        undervalued_pct=-10.0,
+        near_fair_upper_pct=10.0,
+        above_fair_pct=20.0,
+    )
+
+
+def _price_history(symbol: str) -> HistoricalPriceSeries:
+    start = date(2026, 1, 1)
+    rows = tuple(
+        HistoricalPriceRow(
+            date=start + timedelta(days=index),
+            close=100.0,
+            adjusted_close=100.0,
+        )
+        for index in range(31)
+    )
+    return HistoricalPriceSeries(symbol=symbol, rows=rows)

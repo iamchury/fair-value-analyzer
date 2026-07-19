@@ -1,0 +1,9 @@
+defaults:
+  enabled: true
+  rsi_period: 14
+  neutral_level: 50
+  history_period: 1y
+  history_interval: 1d
+  minimum_observations: 30
+  fallback_to_nearest: true
+  prefer_adjusted_close: true

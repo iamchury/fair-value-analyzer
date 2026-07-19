@@ -1,3 +1,5 @@
 yfinance
 PyYAML
 pytest
+streamlit
+pandas

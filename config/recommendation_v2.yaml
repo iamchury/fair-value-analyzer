@@ -1,0 +1,20 @@
+defaults:
+  enabled: true
+  minimum_intrinsic_models: 2
+  valuation_thresholds:
+    deeply_undervalued_pct: -30
+    undervalued_pct: -15
+    slightly_undervalued_pct: -10
+    near_fair_upper_pct: 10
+    moderately_overvalued_pct: 20
+    significantly_overvalued_pct: 30
+  momentum_thresholds:
+    strong_positive_rsi: 60
+    positive_rsi: 50
+    weak_rsi: 45
+    strong_negative_rsi: 35
+    positive_reference_pct: 5
+    negative_reference_pct: -5
+    severe_negative_reference_pct: -15
+  require_agreement_for_strong_buy: true
+  require_agreement_for_sell: true

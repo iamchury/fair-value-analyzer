@@ -6,6 +6,8 @@ import src.services.batch_analysis as batch_analysis
 from src.config.stocks import StocksConfiguration
 from src.config.eps_selection import EPSSelectionConfiguration
 from src.config.industry_policies import IndustryPolicyConfiguration
+from src.config.agreement_engine import AgreementEngineConfiguration
+from src.config.ranking_engine import RankingEngineConfiguration, RankingWeights
 from src.config.valuation import ValuationConfigurationError
 from src.services.batch_analysis import (
     BatchStockAnalysisResult,
@@ -66,6 +68,128 @@ def test_multiple_expected_failures_are_retained_in_order(monkeypatch: pytest.Mo
         "missing price",
         "bad symbol",
     ]
+
+
+def test_batch_passes_momentum_and_range_configs_per_symbol(monkeypatch: pytest.MonkeyPatch) -> None:
+    configuration = object()
+    momentum_config = object()
+    range_config = object()
+    calls = []
+    expected = object()
+
+    def fake_analyze(
+        symbol,
+        config,
+        eps=None,
+        industry=None,
+        analyst=None,
+        agreement=None,
+        momentum=None,
+        fair_range=None,
+    ):
+        calls.append((symbol, config, momentum, fair_range))
+        if symbol == "MU":
+            raise RuntimeError("missing history")
+        return expected
+
+    monkeypatch.setattr(batch_analysis, "analyze_stock", fake_analyze)
+
+    result = analyze_stocks(
+        ["LITE", "MU"],
+        configuration,
+        momentum_config=momentum_config,
+        range_config=range_config,
+    )
+
+    assert calls == [
+        ("LITE", configuration, momentum_config, range_config),
+        ("MU", configuration, momentum_config, range_config),
+    ]
+    assert result.successful_results == (expected,)
+    assert result.failures == (
+        StockAnalysisFailure("MU", "RuntimeError", "missing history"),
+    )
+
+
+def test_batch_passes_recommendation_v2_config_per_symbol(monkeypatch: pytest.MonkeyPatch) -> None:
+    configuration = object()
+    recommendation_config = object()
+    calls = []
+    expected = object()
+
+    def fake_analyze(
+        symbol,
+        config,
+        eps=None,
+        industry=None,
+        analyst=None,
+        agreement=None,
+        momentum=None,
+        fair_range=None,
+        recommendation_v2=None,
+    ):
+        calls.append((symbol, config, recommendation_v2))
+        if symbol == "MU":
+            raise RuntimeError("failed")
+        return expected
+
+    monkeypatch.setattr(batch_analysis, "analyze_stock", fake_analyze)
+
+    result = analyze_stocks(
+        ["LITE", "MU"],
+        configuration,
+        recommendation_v2_config=recommendation_config,
+    )
+
+    assert calls == [
+        ("LITE", configuration, recommendation_config),
+        ("MU", configuration, recommendation_config),
+    ]
+    assert result.successful_results == (expected,)
+    assert result.failures == (StockAnalysisFailure("MU", "RuntimeError", "failed"),)
+
+
+def test_batch_ranking_consumes_completed_results_without_reanalyzing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configuration = object()
+    recommendation_config = object()
+    ranking_config = RankingEngineConfiguration(True, RankingWeights(45, 20, 15, 10, 10))
+    results = []
+
+    def fake_analyze(
+        symbol,
+        config,
+        eps=None,
+        industry=None,
+        analyst=None,
+        agreement=None,
+        momentum=None,
+        fair_range=None,
+        recommendation_v2=None,
+    ):
+        result = object()
+        results.append(result)
+        return result
+
+    calls = []
+
+    def fake_rank(successes, failures, config):
+        calls.append((successes, failures, config))
+        return "ranking"
+
+    monkeypatch.setattr(batch_analysis, "analyze_stock", fake_analyze)
+    monkeypatch.setattr(batch_analysis, "rank_stocks", fake_rank)
+
+    result = analyze_stocks(
+        ["LITE", "MU"],
+        configuration,
+        recommendation_v2_config=recommendation_config,
+        ranking_config=ranking_config,
+    )
+
+    assert calls == [(tuple(results), (), ranking_config)]
+    assert result.ranking_result == "ranking"
 
 
 @pytest.mark.parametrize("symbols", [[], (), "LITE"])
@@ -304,4 +428,53 @@ def test_batch_file_loading_loads_industry_policy_once_when_supplied(
         ("stocks", "stocks.yaml"),
         ("industry", "industry.yaml"),
         ("analyze", ("LITE", "MU"), valuation_config, None, industry_config),
+    ]
+
+
+def test_batch_file_loading_loads_agreement_config_once_when_supplied(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = []
+    valuation_config = object()
+    agreement_config = object()
+    stocks_config = StocksConfiguration(("LITE", "MU"))
+    expected = object()
+
+    monkeypatch.setattr(
+        batch_analysis,
+        "load_valuation_configuration",
+        lambda path: calls.append(("valuation", path)) or valuation_config,
+    )
+    monkeypatch.setattr(
+        batch_analysis,
+        "load_stocks_configuration",
+        lambda path: calls.append(("stocks", path)) or stocks_config,
+    )
+    monkeypatch.setattr(
+        batch_analysis,
+        "load_agreement_engine_configuration",
+        lambda path: calls.append(("agreement", path)) or agreement_config,
+    )
+    monkeypatch.setattr(
+        batch_analysis,
+        "analyze_stocks",
+        lambda symbols, config, eps=None, industry=None, analyst=None, agreement=None: calls.append(
+            ("analyze", symbols, config, eps, industry, analyst, agreement)
+        )
+        or expected,
+    )
+
+    assert (
+        analyze_stocks_from_config_files(
+            stocks_path="stocks.yaml",
+            valuation_config_path="valuation.yaml",
+            agreement_config_path="agreement.yaml",
+        )
+        is expected
+    )
+    assert calls == [
+        ("valuation", "valuation.yaml"),
+        ("stocks", "stocks.yaml"),
+        ("agreement", "agreement.yaml"),
+        ("analyze", ("LITE", "MU"), valuation_config, None, None, None, agreement_config),
     ]

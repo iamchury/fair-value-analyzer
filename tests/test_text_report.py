@@ -1,16 +1,34 @@
 from dataclasses import replace
+from datetime import datetime, timezone
 
 import pytest
 
 from src.analysis.eps_growth import EPSGrowthResult, EPSTransition
 from src.analysis.eps_selection import EPSSelectionResult, EPSSelectionStatus
+from src.analysis.fair_value_range import calculate_fair_value_range
 from src.analysis.fair_value import FairValueResult
-from src.analysis.analyst_consensus import (
-    AnalystConsensusResult,
-    AnalystConsensusStatus,
-    AnalystConsensusQuality,
-    AnalystDispersionLevel,
-    StaleStatus,
+from src.analysis.momentum_reference import (
+    MomentumPricePosition,
+    MomentumReferenceStatus,
+    PriceField,
+    RsiCrossDirection,
+    RsiMomentumReference,
+)
+from src.analysis.recommendation_v2 import (
+    EvidenceQuality,
+    MomentumCondition,
+    RecommendationAlignment,
+    RecommendationV2Decision,
+    RecommendationV2Result,
+    RecommendationV2Status,
+    ValuationCondition,
+)
+from src.analysis.valuation_snapshot import (
+    ValuationConfidenceLevel,
+    ValuationModelType,
+    ValuationSnapshot,
+    ValuationSnapshotStatus,
+    ValuationValueType,
 )
 from src.analysis.industry_policy import IndustryPolicyTargetPEResult
 from src.analysis.macro_adjustment import MacroAdjustment, YieldTrend
@@ -30,9 +48,16 @@ from src.analysis.valuation_decision import (
     ValuationRecommendation,
 )
 from src.analysis.valuation_snapshot import build_valuation_snapshot_collection
+from src.analysis.agreement_engine import analyze_agreement
+from src.config.agreement_engine import AgreementEngineConfiguration
+from src.config.fair_value_range import (
+    ConservativeRangeMethod,
+    FairValueRangeConfiguration,
+    OptimisticRangeMethod,
+    RangeBaseMethod,
+)
 from src.config.valuation_profiles import ValuationProfile, ValuationStyle
 from src.config.eps_selection import EPSSelectionMethod
-from src.config.analyst_consensus import AnalystFairValueMethod
 from src.config.industry_policies import TargetPEMode, ValuationStyle as IndustryValuationStyle
 from src.reports.text_report import format_stock_analysis_report
 from src.services.stock_analysis import (
@@ -293,34 +318,102 @@ def industry_policy_result() -> IndustryPolicyTargetPEResult:
     )
 
 
-def analyst_result() -> AnalystConsensusResult:
-    return AnalystConsensusResult(
+def analyst_result() -> ValuationSnapshot:
+    return ValuationSnapshot(
         symbol="LITE",
-        status=AnalystConsensusStatus.COMPLETE,
-        fair_value_method=AnalystFairValueMethod.WEIGHTED_MEAN_MIDPOINT,
-        target_mean=100.0,
-        target_high=120.0,
-        target_low=80.0,
-        target_midpoint=100.0,
-        target_range=40.0,
-        dispersion_percent=40.0,
-        dispersion_level=AnalystDispersionLevel.MEDIUM,
-        analyst_count=12,
-        consensus_quality=AnalystConsensusQuality.MODERATE,
-        current_price=80.0,
-        mean_upside_percent=25.0,
-        low_upside_percent=0.0,
-        high_upside_percent=50.0,
-        raw_analyst_fair_value=100.0,
-        treasury_applied=False,
-        treasury_multiplier=0.819,
-        adjusted_analyst_fair_value=100.0,
-        analyst_target_as_of=None,
-        retrieved_at=treasury().yield_date,
-        stale_status=StaleStatus.UNKNOWN,
+        model_type=ValuationModelType.ANALYST_CONSENSUS,
+        model_name="Analyst Consensus Model",
+        value_type=ValuationValueType.MARKET_EXPECTATION,
+        status=ValuationSnapshotStatus.COMPLETE,
+        confidence=ValuationConfidenceLevel.MEDIUM,
+        raw_fair_value=100.0,
+        adjusted_fair_value=100.0,
+        selected_fair_value=100.0,
+        currency="USD",
+        valuation_date=None,
+        source_as_of=None,
+        generated_at=datetime(2026, 7, 18, tzinfo=timezone.utc),
+        methodology="Weighted Mean / Midpoint",
         rationale="analyst rationale",
+        assumptions={
+            "valuation_method": "WEIGHTED_MEAN_MIDPOINT",
+            "mean_weight": 0.7,
+            "midpoint_weight": 0.3,
+            "apply_treasury": False,
+        },
+        metrics={
+            "target_mean": 100.0,
+            "target_high": 120.0,
+            "target_low": 80.0,
+            "target_midpoint": 100.0,
+            "target_range": 40.0,
+            "dispersion_percent": 40.0,
+            "dispersion_classification": "MEDIUM",
+            "treasury_applied": False,
+        },
         warnings=("Yahoo did not provide a reliable analyst-target as-of date.",),
         calculation_steps=(),
+    )
+
+
+def momentum_result() -> RsiMomentumReference:
+    return RsiMomentumReference(
+        symbol="LITE",
+        status=MomentumReferenceStatus.COMPLETE,
+        rsi_period=14,
+        neutral_level=50.0,
+        reference_date=datetime(2026, 6, 18, tzinfo=timezone.utc).date(),
+        reference_price=70.0,
+        reference_rsi=51.07,
+        cross_direction=RsiCrossDirection.CROSS_ABOVE,
+        current_date=datetime(2026, 7, 17, tzinfo=timezone.utc).date(),
+        current_price=80.0,
+        current_rsi=63.42,
+        price_field=PriceField.ADJUSTED_CLOSE,
+        trading_days_since_reference=21,
+        price_change_since_reference=10.0,
+        price_change_since_reference_pct=14.2857142857,
+        price_position=MomentumPricePosition.ABOVE_RSI50_REFERENCE,
+        lookback_start=datetime(2025, 7, 18, tzinfo=timezone.utc).date(),
+        lookback_end=datetime(2026, 7, 17, tzinfo=timezone.utc).date(),
+        observation_count=250,
+        methodology="Wilder RSI(14) neutral-line reference",
+        rationale="The latest RSI(14) neutral-line event was an upward crossing.",
+        warnings=(),
+        calculation_steps=(),
+        generated_at=datetime(2026, 7, 18, tzinfo=timezone.utc),
+    )
+
+
+def recommendation_v2_result() -> RecommendationV2Result:
+    return RecommendationV2Result(
+        symbol="LITE",
+        status=RecommendationV2Status.COMPLETE,
+        decision=RecommendationV2Decision.SELL,
+        valuation_condition=ValuationCondition.SIGNIFICANTLY_OVERVALUED,
+        momentum_condition=MomentumCondition.WEAK,
+        evidence_quality=EvidenceQuality.HIGH,
+        current_price=80.0,
+        conservative_value=60.0,
+        base_value=65.0,
+        optimistic_intrinsic_value=65.0,
+        current_vs_base_pct=23.08,
+        core_agreement=None,
+        extended_agreement=None,
+        intrinsic_model_count=2,
+        reference_model_count=1,
+        current_rsi=41.01,
+        rsi_reference_price=90.0,
+        current_vs_rsi_reference_pct=-11.11,
+        analyst_expectation=100.0,
+        analyst_outlier_status=None,
+        analyst_confidence=ValuationConfidenceLevel.LOW,
+        legacy_recommendation=ValuationRecommendation.SELL,
+        alignment=RecommendationAlignment.ALIGNED,
+        rationale=("Recommendation V2 is SELL.",),
+        warnings=(),
+        calculation_steps=(),
+        generated_at=datetime(2026, 7, 18, tzinfo=timezone.utc),
     )
 
 
@@ -654,11 +747,14 @@ def test_analyst_consensus_section_present_only_when_enabled() -> None:
     report = format_stock_analysis_report(result)
 
     assert "ANALYST CONSENSUS MODEL" in report
-    assert "Target Mean             : 100.00 USD" in report
-    assert "Target Midpoint         : 100.00 USD" in report
-    assert "Dispersion Level        : MEDIUM" in report
-    assert "Consensus Quality       : MODERATE" in report
-    assert "Analyst Fair Value      : 100.00 USD" in report
+    assert "Mean Target             : 100.00 USD" in report
+    assert "High Target             : 120.00 USD" in report
+    assert "Low Target              : 80.00 USD" in report
+    assert "Midpoint                : 100.00 USD" in report
+    assert "Dispersion              : 40.00%" in report
+    assert "Classification          : MEDIUM" in report
+    assert "Confidence              : MEDIUM" in report
+    assert "Selected Analyst FV     : 100.00 USD" in report
     assert "ANALYST WARNINGS" in report
 
 
@@ -703,3 +799,185 @@ def test_snapshot_section_is_present_with_show_snapshots() -> None:
     assert "HIGH" in report
     assert "INTRINSIC_VALUE" in report
     assert "Selected EPS * Applied Target PE * Treasury Multiplier" in report
+
+
+def test_agreement_section_is_present_only_with_show_agreement() -> None:
+    result = service_result(
+        agreement_result=analyze_agreement(_mu_agreement_collection(), _agreement_config()),
+    )
+
+    plain = format_stock_analysis_report(result)
+    shown = format_stock_analysis_report(result, show_agreement=True)
+
+    assert "MODEL AGREEMENT ANALYSIS" not in plain
+    assert "MODEL AGREEMENT ANALYSIS" in shown
+    assert "Core Intrinsic Agreement: STRONG" in shown
+    assert "Extended Agreement      : MODERATE" in shown
+    assert "Overall Agreement       : STRONG" in shown
+    assert "Intrinsic Cluster Median: 691.27 USD" in shown
+    assert "ANALYST_CONSENSUS" in shown
+    assert "ABOVE_INTRINSIC" in shown
+    assert "OUTLIER" in shown
+
+
+def test_momentum_section_is_present_only_with_show_momentum() -> None:
+    result = service_result(momentum_reference=momentum_result())
+
+    plain = format_stock_analysis_report(result)
+    shown = format_stock_analysis_report(result, show_momentum=True)
+
+    assert "MARKET MOMENTUM REFERENCE" not in plain
+    assert "MARKET MOMENTUM REFERENCE" in shown
+    assert "Current RSI             : 63.42" in shown
+    assert "Reference Type          : CROSS_ABOVE" in shown
+    assert "RSI 50 Reference Date   : 2026-06-18" in shown
+    assert "RSI 50 Reference Price  : 70.00 USD" in shown
+    assert "Change vs Reference     : +14.29%" in shown
+    assert "Price Field Used        : ADJUSTED_CLOSE" in shown
+
+
+def test_range_section_is_present_only_with_show_range() -> None:
+    collection = _mu_agreement_collection()
+    agreement = analyze_agreement(collection, _agreement_config())
+    fair_range = calculate_fair_value_range(
+        collection,
+        agreement,
+        848.95,
+        _range_config(),
+        momentum_result(),
+        generated_at=datetime(2026, 7, 18, tzinfo=timezone.utc),
+    )
+    result = service_result(fair_value_range=fair_range)
+
+    plain = format_stock_analysis_report(result)
+    shown = format_stock_analysis_report(result, show_range=True)
+
+    assert "FAIR VALUE RANGE" not in plain
+    assert "FAIR VALUE RANGE" in shown
+    assert "Conservative Value      : 618.10 USD" in shown
+    assert "Base Value              : 691.27 USD" in shown
+    assert "Optimistic Intrinsic    : 691.27 USD" in shown
+    assert "Market Position         : SIGNIFICANTLY_OVERVALUED" in shown
+    assert "Analyst Expectation     : 1428.52 USD" in shown
+    assert "Analyst Outlier         : OUTLIER" in shown
+    assert "Current RSI             : 63.42" in shown
+    assert "RSI 50 Cross Direction  : CROSS_ABOVE" in shown
+
+
+def test_recommendation_v2_section_is_present_only_with_show_flag() -> None:
+    result = service_result(recommendation_v2=recommendation_v2_result())
+
+    plain = format_stock_analysis_report(result)
+    shown = format_stock_analysis_report(result, show_recommendation_v2=True)
+
+    assert "RECOMMENDATION V2" not in plain
+    assert "RECOMMENDATION V2" in shown
+    assert "Decision                : SELL" in shown
+    assert "Valuation Condition     : SIGNIFICANTLY_OVERVALUED" in shown
+    assert "Momentum Condition      : WEAK" in shown
+    assert "Evidence Quality        : HIGH" in shown
+    assert "Legacy Recommendation   : SELL" in shown
+    assert "Alignment               : ALIGNED" in shown
+
+
+def _agreement_config() -> AgreementEngineConfiguration:
+    return AgreementEngineConfiguration(
+        enabled=True,
+        strong_threshold_pct=10.0,
+        moderate_threshold_pct=20.0,
+        weak_threshold_pct=35.0,
+        outlier_threshold_pct=50.0,
+        extreme_outlier_threshold_pct=80.0,
+        minimum_primary_models=2,
+        include_reference_in_intrinsic_cluster=True,
+        market_expectation_affects_overall_agreement=False,
+    )
+
+
+def _range_config() -> FairValueRangeConfiguration:
+    return FairValueRangeConfiguration(
+        enabled=True,
+        include_reference_values=True,
+        include_low_confidence_intrinsic=True,
+        exclude_outliers=True,
+        base_method=RangeBaseMethod.CONFIDENCE_WEIGHTED_MEDIAN,
+        conservative_method=ConservativeRangeMethod.LOWER_SUPPORT,
+        optimistic_method=OptimisticRangeMethod.UPPER_INTRINSIC_SUPPORT,
+        high_confidence_weight=1.0,
+        medium_confidence_weight=0.75,
+        low_confidence_weight=0.5,
+        unknown_confidence_weight=0.25,
+        minimum_intrinsic_models=2,
+        reference_value_weight=0.5,
+        market_expectation_in_intrinsic_range=False,
+        show_market_expectation_separately=True,
+        show_momentum_reference_separately=True,
+        deep_undervalued_pct=-30.0,
+        undervalued_pct=-10.0,
+        near_fair_upper_pct=10.0,
+        above_fair_pct=20.0,
+    )
+
+
+def _mu_agreement_collection():
+    from src.analysis.valuation_snapshot import ValuationSnapshotCollection
+
+    generated_at = datetime(2026, 7, 18, tzinfo=timezone.utc)
+    return ValuationSnapshotCollection(
+        "MU",
+        (
+            _agreement_snapshot(
+                ValuationModelType.AUTOMATIC_PER,
+                691.27,
+                ValuationValueType.INTRINSIC_VALUE,
+                ValuationConfidenceLevel.LOW,
+            ),
+            _agreement_snapshot(
+                ValuationModelType.RESEARCH_PER,
+                691.27,
+                ValuationValueType.INTRINSIC_VALUE,
+                ValuationConfidenceLevel.HIGH,
+            ),
+            _agreement_snapshot(
+                ValuationModelType.DCF_REFERENCE,
+                618.10,
+                ValuationValueType.REFERENCE_VALUE,
+                ValuationConfidenceLevel.MEDIUM,
+            ),
+            _agreement_snapshot(
+                ValuationModelType.ANALYST_CONSENSUS,
+                1428.52,
+                ValuationValueType.MARKET_EXPECTATION,
+                ValuationConfidenceLevel.LOW,
+            ),
+        ),
+        generated_at,
+    )
+
+
+def _agreement_snapshot(model_type, value, value_type, confidence):
+    return ValuationSnapshot(
+        symbol="MU",
+        model_type=model_type,
+        model_name=model_type.value,
+        value_type=value_type,
+        status=ValuationSnapshotStatus.COMPLETE,
+        confidence=confidence,
+        raw_fair_value=value,
+        adjusted_fair_value=value,
+        selected_fair_value=value,
+        currency="USD",
+        valuation_date=None,
+        source_as_of=None,
+        generated_at=datetime(2026, 7, 18, tzinfo=timezone.utc),
+        methodology="method",
+        rationale=None,
+        assumptions={},
+        metrics={},
+        warnings=(
+            ("Analyst target dispersion is extreme.",)
+            if model_type == ValuationModelType.ANALYST_CONSENSUS
+            else ()
+        ),
+        calculation_steps=(),
+    )
